@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Veeqo Chargeback Tool</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- Header -->
+  <header id="app-header">
+    <h1>Veeqo Chargeback Tool</h1>
+    <input type="text" id="agent-name" placeholder="Your Name" aria-label="Agent Name">
+  </header>
+
+  <!-- File Upload Areas -->
+  <section id="upload-section">
+    <div class="upload-area" id="task-engine-upload">
+      <label>Upload Task Engine Export</label>
+      <input type="file" id="task-engine-file" accept=".csv,.xlsx" aria-label="Upload Task Engine Export">
+      <p class="upload-filename" id="task-engine-filename"></p>
+      <p class="upload-error" id="task-engine-error"></p>
+    </div>
+    <div class="upload-area" id="datanet-upload">
+      <label>Upload Datanet Export</label>
+      <input type="file" id="datanet-file" accept=".csv,.xlsx" aria-label="Upload Datanet Export">
+      <p class="upload-filename" id="datanet-filename"></p>
+      <p class="upload-error" id="datanet-error"></p>
+    </div>
+  </section>
+
+  <!-- Merge Button -->
+  <section id="merge-section">
+    <button id="merge-btn" disabled>Merge Data</button>
+  </section>
+
+  <!-- Action Buttons Bar (hidden until merge completes) -->
+  <section id="action-buttons" style="display: none;">
+    <button id="copy-fedex-email-btn">Copy FedEx Email</button>
+    <button id="copy-tcorp-btn">Copy T.Corp Fields</button>
+    <button id="copy-splat-btn">Copy SPLAT T.Corp Fields</button>
+    <button id="export-csv-btn">Export Tab as CSV</button>
+  </section>
+
+  <!-- Tab Bar -->
+  <nav id="tab-bar">
+    <button class="tab active" data-tab="All">All</button>
+    <button class="tab" data-tab="FedEx">FedEx</button>
+    <button class="tab" data-tab="UPS">UPS</button>
+    <button class="tab" data-tab="USPS">USPS</button>
+    <button class="tab" data-tab="DHL">DHL</button>
+    <button class="tab" data-tab="OnTrac">OnTrac</button>
+    <button class="tab" data-tab="Unmatched">Unmatched</button>
+  </nav>
+
+  <!-- Row Count -->
+  <p id="row-count"></p>
+
+  <!-- Scrollable Table Container -->
+  <section id="table-container">
+    <table id="data-table">
+      <thead></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <!-- Notification Area -->
+  <div id="notification-area"></div>
+
+  <!-- Scripts -->
+  <script src="libs/xlsx.min.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

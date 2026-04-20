@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "Veeqo Chargeback Tool",
+  "version": "1.0.0",
+  "description": "Merge Task Engine and Datanet exports to process carrier chargeback disputes.",
+  "permissions": ["storage"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Veeqo Chargeback Tool"
+  }
+}
