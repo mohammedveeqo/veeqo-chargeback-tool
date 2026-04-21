@@ -42,7 +42,7 @@ body {
   align-items: center;
 }
 
-#agent-name, #intercom-ticket {
+#agent-name, #intercom-ticket, #datanet-profile-url {
   padding: 8px 12px;
   border: none;
   border-radius: 6px;
@@ -53,11 +53,15 @@ body {
   transition: box-shadow 0.2s;
 }
 
-#agent-name::placeholder, #intercom-ticket::placeholder {
+#datanet-profile-url {
+  width: 280px;
+}
+
+#agent-name::placeholder, #intercom-ticket::placeholder, #datanet-profile-url::placeholder {
   color: #b2bec3;
 }
 
-#agent-name:focus, #intercom-ticket:focus {
+#agent-name:focus, #intercom-ticket:focus, #datanet-profile-url:focus {
   outline: none;
   box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.4);
   background: #fff;
@@ -148,34 +152,24 @@ body {
   margin-bottom: 16px;
 }
 
-#merge-btn {
-  padding: 11px 40px;
-  font-size: 15px;
+#copy-datanet-sql-btn {
+  padding: 11px 28px;
+  font-size: 14px;
   font-weight: 600;
   color: #fff;
-  background: linear-gradient(135deg, #0984e3, #6c5ce7);
+  background: #e17055;
   border: none;
   border-radius: 8px;
   cursor: pointer;
   transition: all 0.25s ease;
-  box-shadow: 0 3px 10px rgba(9, 132, 227, 0.3);
-  letter-spacing: 0.3px;
+  box-shadow: 0 3px 10px rgba(225, 112, 85, 0.3);
+  margin-left: 10px;
 }
 
-#merge-btn:hover:not(:disabled) {
+#copy-datanet-sql-btn:hover {
+  background: #d35400;
   transform: translateY(-1px);
-  box-shadow: 0 5px 15px rgba(9, 132, 227, 0.4);
-}
-
-#merge-btn:active:not(:disabled) {
-  transform: translateY(0);
-}
-
-#merge-btn:disabled {
-  background: #b2bec3;
-  color: #dfe6e9;
-  cursor: not-allowed;
-  box-shadow: none;
+  box-shadow: 0 5px 15px rgba(225, 112, 85, 0.4);
 }
 
 /* === Action Buttons === */
@@ -270,6 +264,34 @@ body {
   color: #fff;
   font-weight: 600;
   box-shadow: 0 2px 6px rgba(9, 132, 227, 0.3);
+}
+
+.tab.active .tab-badge {
+  background: rgba(255, 255, 255, 0.3);
+  color: #fff;
+}
+
+/* === Tab Badge === */
+.tab-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 700;
+  background: #0984e3;
+  color: #fff;
+  margin-left: 5px;
+  vertical-align: middle;
+  line-height: 1;
+}
+
+.tab-badge-zero {
+  background: #dfe6e9;
+  color: #b2bec3;
 }
 
 /* === Row Count === */

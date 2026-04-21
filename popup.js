@@ -66,14 +66,37 @@ function loadAgentName() {
 }
 
 function saveAgentName(name) {
-  // Always save to localStorage as fallback
   localStorage.setItem('agentName', name);
   if (isChromeAvailable()) {
     try {
       chrome.storage.local.set({ agentName: name });
+    } catch (e) {}
+  }
+}
+
+function loadDatanetProfileUrl() {
+  const fallback = localStorage.getItem('datanetProfileUrl') || '';
+  const input = document.getElementById('datanet-profile-url');
+  if (isChromeAvailable()) {
+    try {
+      chrome.storage.local.get('datanetProfileUrl', (result) => {
+        const url = (result && result.datanetProfileUrl) || fallback;
+        if (input) input.value = url;
+      });
     } catch (e) {
-      // Context invalidated — localStorage fallback already saved
+      if (input) input.value = fallback;
     }
+  } else {
+    if (input) input.value = fallback;
+  }
+}
+
+function saveDatanetProfileUrl(url) {
+  localStorage.setItem('datanetProfileUrl', url);
+  if (isChromeAvailable()) {
+    try {
+      chrome.storage.local.set({ datanetProfileUrl: url });
+    } catch (e) {}
   }
 }
 
@@ -318,27 +341,150 @@ function handleFileUpload(file, type) {
 
   parseFile(file)
     .then((rows) => {
+      if (rows.length === 0) {
+        errorEl.textContent = 'File contains no data rows.';
+        return;
+      }
+
+      const keys = Object.keys(rows[0]).map(k => k.toLowerCase());
+
+      // File type cross-check: detect if the wrong file was uploaded to the wrong area
+      if (isTaskEngine && keys.includes('tracking_id') && !keys.includes('tracking_number')) {
+        errorEl.textContent = 'This looks like a Datanet export. Please upload it in the Datanet upload area instead.';
+        return;
+      }
+      if (!isTaskEngine && keys.includes('tracking_number') && !keys.includes('tracking_id')) {
+        errorEl.textContent = 'This looks like a Task Engine export. Please upload it in the Task Engine upload area instead.';
+        return;
+      }
+
       const requiredCol = isTaskEngine ? 'tracking_number' : 'tracking_id';
-      if (rows.length > 0 && !(requiredCol in rows[0])) {
+      if (!(requiredCol in rows[0])) {
         errorEl.textContent = 'File is missing required columns. Please upload a valid export.';
         return;
       }
-      filenameEl.textContent = file.name;
+
+      // Map rows
+      let mapped;
       if (isTaskEngine) {
-        state.taskEngineRows = rows.map(mapTaskEngineRow);
+        mapped = rows.map(mapTaskEngineRow);
       } else {
-        state.datanetRows = rows.map(mapDatanetRow);
+        mapped = rows.map(mapDatanetRow);
       }
-      updateMergeButton();
+
+      // Duplicate tracking number check
+      const trackingCol = mapped.map(r => r.trackingNumber);
+      const seen = new Set();
+      const dupes = [];
+      const deduped = [];
+      trackingCol.forEach((tn, i) => {
+        if (seen.has(tn)) {
+          if (dupes.length < 5) dupes.push(tn);
+        } else {
+          seen.add(tn);
+          deduped.push(mapped[i]);
+        }
+      });
+      if (dupes.length > 0) {
+        const label = isTaskEngine ? 'Task Engine' : 'Datanet';
+        showNotification('Duplicate tracking numbers found in ' + label + ' export: ' + dupes.join(', ') + '. Duplicates will be ignored — only the first occurrence will be used.', 'error');
+      }
+
+      filenameEl.textContent = file.name + ' (' + deduped.length + ' rows)';
+      if (isTaskEngine) {
+        state.taskEngineRows = deduped;
+        document.getElementById('copy-datanet-sql-btn').style.display = '';
+      } else {
+        state.datanetRows = deduped;
+      }
+
+      tryAutoMerge();
     })
     .catch((err) => {
       errorEl.textContent = err.message;
     });
 }
 
-function updateMergeButton() {
-  const btn = document.getElementById('merge-btn');
-  btn.disabled = !(state.taskEngineRows && state.datanetRows);
+function tryAutoMerge() {
+  if (!state.taskEngineRows || !state.datanetRows) return;
+
+  // Calculate match percentage
+  const teTracking = new Set(state.taskEngineRows.map(r => r.trackingNumber));
+  const dnTracking = new Set(state.datanetRows.map(r => r.trackingNumber));
+  let matchCount = 0;
+  teTracking.forEach(tn => { if (dnTracking.has(tn)) matchCount++; });
+  const matchPct = teTracking.size > 0 ? Math.round((matchCount / teTracking.size) * 100) : 0;
+
+  if (matchCount === 0) {
+    showNotification('No matching tracking numbers found between the two files. Please check you have uploaded the correct files for the same seller/dispute.', 'error');
+    return;
+  }
+
+  if (matchPct < 50) {
+    // Show warning with merge/cancel choice
+    showMergeConfirmation(matchPct, matchCount, teTracking.size);
+    return;
+  }
+
+  performMerge();
+}
+
+function showMergeConfirmation(pct, matched, total) {
+  // Remove any existing confirmation
+  const existing = document.getElementById('merge-confirm-bar');
+  if (existing) existing.remove();
+
+  const bar = document.createElement('div');
+  bar.id = 'merge-confirm-bar';
+  bar.style.cssText = 'padding:12px 16px;background:#fff3e0;border:1px solid #ffcc80;border-radius:8px;margin-bottom:14px;display:flex;align-items:center;gap:12px;font-size:13px;color:#e65100;';
+  bar.innerHTML = '<span>Only ' + pct + '% of tracking numbers matched (' + matched + '/' + total + '). Some data may be for a different seller or dispute.</span>';
+
+  const mergeBtn = document.createElement('button');
+  mergeBtn.textContent = 'Merge Anyway';
+  mergeBtn.style.cssText = 'padding:6px 14px;background:#e17055;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;';
+  mergeBtn.addEventListener('click', () => { bar.remove(); performMerge(); });
+
+  const cancelBtn = document.createElement('button');
+  cancelBtn.textContent = 'Cancel';
+  cancelBtn.style.cssText = 'padding:6px 14px;background:#b2bec3;color:#2d3436;border:none;border-radius:6px;cursor:pointer;font-size:13px;font-weight:500;';
+  cancelBtn.addEventListener('click', () => { bar.remove(); });
+
+  bar.appendChild(mergeBtn);
+  bar.appendChild(cancelBtn);
+
+  // Insert before the action buttons or tab bar
+  const actionBar = document.getElementById('action-buttons');
+  actionBar.parentNode.insertBefore(bar, actionBar);
+}
+
+function performMerge() {
+  try {
+    // Remove any confirmation bar
+    const confirmBar = document.getElementById('merge-confirm-bar');
+    if (confirmBar) confirmBar.remove();
+
+    const merged = mergeData(state.taskEngineRows, state.datanetRows);
+    merged.forEach(calculateFields);
+    state.mergedRows = merged;
+    state.activeTab = 'All';
+
+    const filtered = filterByTab(merged, 'All');
+    state.selectedRowIndices = new Set(filtered.map((_, i) => i));
+
+    const tabs = document.querySelectorAll('#tab-bar .tab');
+    tabs.forEach(t => t.classList.remove('active'));
+    tabs.forEach(t => { if (t.dataset.tab === 'All') t.classList.add('active'); });
+
+    updateTabCounts(state.mergedRows);
+    renderTable(filtered);
+
+    // Count matches vs unmatched
+    const matchedCount = merged.filter(r => r.shipmentId !== 'N/A' && r.carrierAuditedTotal !== 'N/A').length;
+    const unmatchedCount = merged.length - matchedCount;
+    showNotification('Merged: ' + matchedCount + ' matched, ' + unmatchedCount + ' unmatched out of ' + merged.length + ' total.', 'success');
+  } catch (e) {
+    showNotification('An error occurred during merge. Please check your files.', 'error');
+  }
 }
 
 function setupUploadHandlers() {
@@ -590,8 +736,10 @@ function updateTabCounts(rows) {
   tabs.forEach((tabBtn) => {
     const tab = tabBtn.dataset.tab;
     const count = filterByTab(rows, tab).length;
-    // Update label with count
-    tabBtn.textContent = tab + ' (' + count + ')';
+    // Render tab name with a badge for the count
+    tabBtn.innerHTML = tab + (count > 0
+      ? ' <span class="tab-badge">' + count + '</span>'
+      : ' <span class="tab-badge tab-badge-zero">0</span>');
     // Hide carrier tabs with 0 rows; always show All and Unmatched
     if (tab === 'All' || tab === 'Unmatched') {
       tabBtn.style.display = '';
@@ -883,6 +1031,127 @@ function exportCSV(rows, tabName) {
   URL.revokeObjectURL(url);
 }
 
+/* ===== Datanet SQL Generator (Requirement 18) ===== */
+
+function generateDatanetSQL(trackingNumbers) {
+  const formatted = trackingNumbers
+    .map(tn => "'" + String(tn).replace(/'/g, "''") + "'")
+    .join(',\n');
+
+  const today = new Date();
+  const runDate = today.getFullYear() + '-' + String(today.getMonth() + 1).padStart(2, '0') + '-' + String(today.getDate()).padStart(2, '0');
+
+  return `/*+ETLM { depend:{ replace:[ {name:"andes.tfs_tips.freight_invoice_transactions"}, ] } }*/
+
+----drop table if exists pre_original_invoice_base;
+create temp table pre_original_invoice_base distkey(pkg_track_number) as (
+select * from andes_ext.tfs_tips.freight_invoice_transactions
+ where invoice_load_day >= DATE '${runDate}'- 180
+AND carrier_ref_id in (
+${formatted}
+)
+);
+
+----drop table if exists pre_original_invoice;
+create temp table pre_original_invoice distkey(pkg_track_number) as
+(select
+    inv.*
+from pre_original_invoice_base as inv
+);
+
+----drop table if exists original_invoice;
+create temp table original_invoice distkey(pkg_track_number) as (
+select
+   line_item_id,
+   pkg_track_number,
+   invoice_identifier,
+   pkg_length as original_invoice_length,
+   pkg_height as original_invoice_height,
+pkg_width as original_invoice_width,
+pkg_length_uom as original_invoice_dim_uom,
+   pkg_weight as  original_invoice_weight,
+   pkg_weight_uom as original_invoice_weight_uom,
+   max(pkg_net_charge) as original_invoice_net_charge,
+sum(charge_amount) as original_invoice_amount,
+SUM(CASE WHEN CHARGE_TYPE = 'BaseRateCharge' THEN charge_amount ELSE 0 END) AS ORIGINAL_INVOICE_BASE_CHARGE,
+   SUM(CASE WHEN CHARGE_TYPE = 'DeliveryAreaSurcharge' THEN charge_amount ELSE 0 END) AS ORIGINAL_INVOICE_DELIVERY_AREA_SURCHARGE,
+   SUM(CASE WHEN CHARGE_TYPE = 'FuelCharge' THEN charge_amount ELSE 0 END) AS ORIGINAL_INVOICE_FUEL_SURCHARGE,
+   SUM(CASE WHEN CHARGE_TYPE = 'OversizeCharge' THEN charge_amount ELSE 0 END) AS ORIGINAL_INVOICE_OVERSIZE_SURCHARGE,
+   SUM(CASE WHEN CHARGE_TYPE = 'SpecialHandlingCharge' THEN charge_amount ELSE 0 END) AS ORIGINAL_INVOICE_SPECIAL_HANDLING_SURCHARGE,
+   SUM(CASE WHEN CHARGE_TYPE = 'OvermaxCharges' THEN charge_amount ELSE 0 END) AS ORIGINAL_INVOICE_OVERMAX_SURCHARGE,
+   SUM(CASE WHEN CHARGE_TYPE NOT IN ('BaseRateCharge','DeliveryAreaSurcharge','FuelCharge','OversizeCharge','SpecialHandlingCharge','OvermaxCharges') THEN charge_amount ELSE 0 END) AS ORIGINAL_INVOICE_OTHER_CHARGES,
+   max(invoice_load_day) as invoice_load_day
+   from pre_original_invoice
+group by
+   line_item_id,
+   pkg_track_number,
+   invoice_identifier,
+   pkg_length,
+   pkg_height,
+   pkg_width,
+   pkg_length_uom,
+   pkg_weight,
+   pkg_weight_uom
+);
+
+----drop table if exists pre_final;
+create temp table pre_final distkey(tracking_id) as (
+   SELECT
+            pkg_track_number as tracking_id,
+           line_item_id as TCDA_ID,
+           MAX(original_invoice_length) As original_invoice_length,
+           MAX(original_invoice_width) AS original_invoice_width,
+           MAX(original_invoice_height) AS original_invoice_height,
+           MAX(original_invoice_dim_uom) AS original_invoice_dim_uom,
+           MAX(original_invoice_weight) AS original_invoice_weight,
+           MAX(original_invoice_weight_uom) AS original_invoice_weight_uom,
+           SUM(original_invoice_amount) AS original_invoice_amount,
+           SUM(ORIGINAL_INVOICE_BASE_CHARGE) AS ORIGINAL_INVOICE_BASE_CHARGE,
+           SUM(ORIGINAL_INVOICE_DELIVERY_AREA_SURCHARGE) AS ORIGINAL_INVOICE_DELIVERY_AREA_SURCHARGE,
+           SUM(ORIGINAL_INVOICE_FUEL_SURCHARGE) AS ORIGINAL_INVOICE_FUEL_SURCHARGE,
+           SUM(ORIGINAL_INVOICE_OVERSIZE_SURCHARGE) AS ORIGINAL_INVOICE_OVERSIZE_SURCHARGE,
+           SUM(ORIGINAL_INVOICE_SPECIAL_HANDLING_SURCHARGE) AS ORIGINAL_INVOICE_SPECIAL_HANDLING_SURCHARGE,
+           SUM(ORIGINAL_INVOICE_OVERMAX_SURCHARGE) AS ORIGINAL_INVOICE_OVERMAX_SURCHARGE,
+           SUM(ORIGINAL_INVOICE_OTHER_CHARGES) AS ORIGINAL_INVOICE_OTHER_CHARGES,
+           MAX(invoice_load_day) AS invoice_load_day
+   FROM original_invoice
+    GROUP BY
+             pkg_track_number,
+           line_item_id
+   );
+
+----drop table if exists Invoice_Charge_ID_Amount;
+create temp table Invoice_Charge_ID_Amount as (
+Select trans.pkg_track_number, trans.line_item_id,
+   trans.charge_type,
+   sum(charge_amount) as Charge_type_amount
+from pre_original_invoice as trans
+Group by
+   trans.pkg_track_number, trans.line_item_id,
+   trans.charge_type
+);
+
+----drop table if exists Invoice_Charge_final;
+create temp table Invoice_Charge_final as (
+select pkg_track_number, line_item_id,
+   listagg(charge_type || '= '|| cast(nvl(Charge_type_amount,0) ::decimal(32, 2) as varchar(30)),', ') as invoice_Charge_type_list_with_amount
+from Invoice_Charge_ID_Amount
+group by 1,2
+);
+
+----drop table if exists final;
+create temp table final as
+   (select p.*,
+           i.invoice_Charge_type_list_with_amount
+    from pre_final as p
+             left join Invoice_Charge_final as i
+                       on i.line_item_id = p.TCDA_ID
+                           and i.pkg_track_number = p.tracking_id
+    );
+
+Select * from final;`;
+}
+
 /* ===== Notification System (Task 13) ===== */
 
 function showNotification(message, type) {
@@ -985,6 +1254,12 @@ function wireActionButtons() {
   // T.Corp Modal — Open T.Corp & Auto-fill
   document.getElementById('tcorp-open-btn').addEventListener('click', async () => {
     try {
+      const ticketId = (document.getElementById('tcorp-ticket-id').value || '').trim();
+      if (!ticketId) {
+        showNotification('Please enter a Veeqo Ticket ID before creating the T.Corp.', 'error');
+        document.getElementById('tcorp-ticket-id').focus();
+        return;
+      }
       const description = getTCorpFormText();
       const data = {
         mcid: document.getElementById('tcorp-mcid').value,
@@ -1069,6 +1344,36 @@ function wireActionButtons() {
       showNotification('Could not export CSV. Please try again.', 'error');
     }
   });
+
+  // Copy Datanet SQL
+  document.getElementById('copy-datanet-sql-btn').addEventListener('click', async () => {
+    try {
+      if (!state.taskEngineRows || state.taskEngineRows.length === 0) {
+        showNotification('Upload a Task Engine export first.', 'error');
+        return;
+      }
+      const trackingNumbers = state.taskEngineRows
+        .map(r => r.trackingNumber)
+        .filter(tn => tn && tn.trim() !== '');
+      if (trackingNumbers.length === 0) {
+        showNotification('No tracking numbers found in the Task Engine export.', 'error');
+        return;
+      }
+      const sql = generateDatanetSQL(trackingNumbers);
+      await navigator.clipboard.writeText(sql);
+
+      // Open saved Datanet profile URL or show generic link
+      const savedUrl = (document.getElementById('datanet-profile-url').value || '').trim();
+      if (savedUrl) {
+        window.open(savedUrl, '_blank');
+        showNotification('SQL copied (' + trackingNumbers.length + ' tracking numbers) — Datanet profile opened. Paste the SQL and run.', 'success');
+      } else {
+        showNotification('SQL copied (' + trackingNumbers.length + ' tracking numbers). Save your Datanet profile URL in the header to open it automatically next time.', 'success');
+      }
+    } catch (e) {
+      showNotification('Could not copy SQL to clipboard. Please try again.', 'error');
+    }
+  });
 }
 
 /* ===== Tab Wiring ===== */
@@ -1090,42 +1395,13 @@ function wireTabHandlers() {
 
 /* ===== Merge Button Wiring ===== */
 
-function wireMergeButton() {
-  document.getElementById('merge-btn').addEventListener('click', () => {
-    try {
-      if (!state.taskEngineRows || !state.datanetRows) return;
-      const merged = mergeData(state.taskEngineRows, state.datanetRows);
-      merged.forEach(calculateFields);
-      state.mergedRows = merged;
-      state.activeTab = 'All';
-
-      // Select all rows by default
-      const filtered = filterByTab(merged, 'All');
-      state.selectedRowIndices = new Set(filtered.map((_, i) => i));
-
-      // Reset active tab UI
-      const tabs = document.querySelectorAll('#tab-bar .tab');
-      tabs.forEach(t => t.classList.remove('active'));
-      tabs.forEach(t => { if (t.dataset.tab === 'All') t.classList.add('active'); });
-
-      // Check if no matches
-      const allUnmatched = merged.every(r => r.shipmentId === 'N/A' || r.carrierAuditedTotal === 'N/A');
-      if (allUnmatched && merged.length > 0) {
-        showNotification('No matching tracking numbers found between the two files.', 'error');
-      }
-
-      updateTabCounts(state.mergedRows);
-      renderTable(filtered);
-    } catch (e) {
-      showNotification('An error occurred during merge. Please check your files.', 'error');
-    }
-  });
-}
+/* ===== (Merge is now automatic — no button wiring needed) ===== */
 
 /* ===== Init (Bootstrap) ===== */
 
 function init() {
   loadAgentName();
+  loadDatanetProfileUrl();
 
   // Agent name input handler (debounced 500ms)
   const agentInput = document.getElementById('agent-name');
@@ -1137,14 +1413,22 @@ function init() {
     }, 500);
   });
 
+  // Datanet profile URL input handler (debounced 500ms)
+  let saveDatanetTimer = null;
+  const datanetInput = document.getElementById('datanet-profile-url');
+  datanetInput.addEventListener('input', () => {
+    if (saveDatanetTimer) clearTimeout(saveDatanetTimer);
+    saveDatanetTimer = setTimeout(() => {
+      saveDatanetProfileUrl(datanetInput.value);
+    }, 500);
+  });
+
   // Auto-fetch seller details on load
   fetchSellerDetails();
 
   setupUploadHandlers();
   wireTabHandlers();
-  wireMergeButton();
   wireActionButtons();
-  updateMergeButton();
 }
 
 document.addEventListener('DOMContentLoaded', init);
