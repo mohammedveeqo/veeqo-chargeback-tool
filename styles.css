@@ -8,12 +8,13 @@
 }
 
 body {
-  background-color: #fff;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background-color: #f8f9fa;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
   min-width: 800px;
   min-height: 600px;
-  padding: 16px 24px;
-  color: #333;
+  padding: 20px 28px;
+  color: #2d3436;
+  line-height: 1.5;
 }
 
 /* === Header === */
@@ -21,29 +22,66 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 0;
-  border-bottom: 1px solid #e0e0e0;
+  padding: 16px 20px;
+  background: linear-gradient(135deg, #0984e3, #6c5ce7);
+  border-radius: 10px;
   margin-bottom: 16px;
+  box-shadow: 0 4px 15px rgba(9, 132, 227, 0.25);
 }
 
 #app-header h1 {
-  font-size: 20px;
-  font-weight: 600;
-  color: #222;
+  font-size: 22px;
+  font-weight: 700;
+  color: #fff;
+  letter-spacing: -0.3px;
 }
 
-#agent-name {
-  padding: 6px 10px;
-  border: 1px solid #ccc;
-  border-radius: 4px;
-  font-size: 14px;
-  width: 200px;
+#header-inputs {
+  display: flex;
+  gap: 10px;
+  align-items: center;
 }
 
-#agent-name:focus {
+#agent-name, #intercom-ticket {
+  padding: 8px 12px;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  width: 175px;
+  background: rgba(255, 255, 255, 0.9);
+  color: #2d3436;
+  transition: box-shadow 0.2s;
+}
+
+#agent-name::placeholder, #intercom-ticket::placeholder {
+  color: #b2bec3;
+}
+
+#agent-name:focus, #intercom-ticket:focus {
   outline: none;
-  border-color: #4a90d9;
-  box-shadow: 0 0 0 2px rgba(74, 144, 217, 0.2);
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.4);
+  background: #fff;
+}
+
+/* === Seller Details Panel === */
+#seller-details-panel {
+  display: flex;
+  gap: 24px;
+  flex-wrap: wrap;
+  align-items: center;
+  padding: 10px 16px;
+  background: #fff;
+  border: 1px solid #dfe6e9;
+  border-left: 4px solid #6c5ce7;
+  border-radius: 8px;
+  margin-bottom: 16px;
+  font-size: 13px;
+  color: #636e72;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
+}
+
+#seller-details-panel strong {
+  color: #2d3436;
 }
 
 /* === File Upload Section === */
@@ -55,22 +93,26 @@ body {
 
 .upload-area {
   flex: 1;
-  border: 2px dashed #ccc;
-  border-radius: 6px;
-  padding: 20px;
+  border: 2px dashed #b2bec3;
+  border-radius: 10px;
+  padding: 24px 20px;
   text-align: center;
-  background-color: #fafafa;
-  transition: border-color 0.2s, background-color 0.2s;
+  background-color: #fff;
+  transition: all 0.25s ease;
   cursor: pointer;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
 }
 
 .upload-area:hover {
-  border-color: #999;
+  border-color: #0984e3;
+  background-color: #f0f7ff;
+  box-shadow: 0 2px 8px rgba(9, 132, 227, 0.1);
 }
 
 .upload-area.dragover {
-  border-color: #4a90d9;
-  background-color: #e8f0fe;
+  border-color: #0984e3;
+  background-color: #dfe6fd;
+  box-shadow: 0 4px 12px rgba(9, 132, 227, 0.15);
 }
 
 .upload-area label {
@@ -78,23 +120,26 @@ body {
   font-size: 14px;
   font-weight: 600;
   margin-bottom: 10px;
-  color: #444;
+  color: #2d3436;
 }
 
 .upload-area input[type="file"] {
   font-size: 13px;
+  color: #636e72;
 }
 
 .upload-filename {
   font-size: 13px;
-  color: #2e7d32;
+  color: #00b894;
   margin-top: 8px;
+  font-weight: 500;
 }
 
 .upload-error {
   font-size: 13px;
-  color: #c62828;
+  color: #d63031;
   margin-top: 8px;
+  font-weight: 500;
 }
 
 /* === Merge Section === */
@@ -104,25 +149,33 @@ body {
 }
 
 #merge-btn {
-  padding: 10px 32px;
+  padding: 11px 40px;
   font-size: 15px;
   font-weight: 600;
   color: #fff;
-  background-color: #1976d2;
+  background: linear-gradient(135deg, #0984e3, #6c5ce7);
   border: none;
-  border-radius: 4px;
+  border-radius: 8px;
   cursor: pointer;
-  transition: background-color 0.2s;
+  transition: all 0.25s ease;
+  box-shadow: 0 3px 10px rgba(9, 132, 227, 0.3);
+  letter-spacing: 0.3px;
 }
 
 #merge-btn:hover:not(:disabled) {
-  background-color: #1565c0;
+  transform: translateY(-1px);
+  box-shadow: 0 5px 15px rgba(9, 132, 227, 0.4);
+}
+
+#merge-btn:active:not(:disabled) {
+  transform: translateY(0);
 }
 
 #merge-btn:disabled {
-  background-color: #bdbdbd;
-  color: #fff;
+  background: #b2bec3;
+  color: #dfe6e9;
   cursor: not-allowed;
+  box-shadow: none;
 }
 
 /* === Action Buttons === */
@@ -130,78 +183,119 @@ body {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
-  margin-bottom: 12px;
+  margin-bottom: 14px;
+  padding: 10px 14px;
+  background: #fff;
+  border-radius: 8px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
 }
 
 #action-buttons button {
-  padding: 7px 14px;
+  padding: 8px 16px;
   font-size: 13px;
   font-weight: 500;
   color: #fff;
-  background-color: #43a047;
   border: none;
-  border-radius: 4px;
+  border-radius: 6px;
   cursor: pointer;
-  transition: background-color 0.2s;
+  transition: all 0.2s ease;
 }
 
-#action-buttons button:hover {
-  background-color: #388e3c;
+#send-fedex-email-btn {
+  background: #e17055;
+}
+#send-fedex-email-btn:hover {
+  background: #d35400;
+}
+
+#export-fedex-csv-btn {
+  background: #fdcb6e;
+  color: #2d3436 !important;
+}
+#export-fedex-csv-btn:hover {
+  background: #f9ca24;
+}
+
+#create-tcorp-btn {
+  background: #6c5ce7;
+}
+#create-tcorp-btn:hover {
+  background: #5b4cdb;
+}
+
+#copy-splat-btn {
+  background: #00b894;
+}
+#copy-splat-btn:hover {
+  background: #00a381;
+}
+
+#export-csv-btn {
+  background: #636e72;
+}
+#export-csv-btn:hover {
+  background: #535c60;
 }
 
 /* === Tab Bar === */
 #tab-bar {
   display: flex;
-  gap: 0;
-  border-bottom: 2px solid #e0e0e0;
-  margin-bottom: 8px;
+  gap: 2px;
+  background: #fff;
+  border-radius: 8px;
+  padding: 4px;
+  margin-bottom: 10px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
 }
 
 .tab {
   padding: 8px 18px;
   font-size: 13px;
   font-weight: 500;
-  color: #666;
-  background: none;
+  color: #636e72;
+  background: transparent;
   border: none;
-  border-bottom: 2px solid transparent;
-  margin-bottom: -2px;
+  border-radius: 6px;
   cursor: pointer;
-  transition: color 0.2s, border-color 0.2s;
+  transition: all 0.2s ease;
 }
 
 .tab:hover {
-  color: #333;
+  background: #f0f0f0;
+  color: #2d3436;
 }
 
 .tab.active {
-  color: #1976d2;
-  border-bottom-color: #1976d2;
+  background: #0984e3;
+  color: #fff;
   font-weight: 600;
+  box-shadow: 0 2px 6px rgba(9, 132, 227, 0.3);
 }
 
 /* === Row Count === */
 #row-count {
   font-size: 13px;
-  color: #666;
+  color: #636e72;
   margin-bottom: 8px;
-  padding: 2px 0;
+  padding: 2px 4px;
+  font-weight: 500;
 }
 
 /* === Table Container === */
 #table-container {
   overflow-y: auto;
   overflow-x: auto;
-  max-height: 60vh;
-  border: 1px solid #e0e0e0;
-  border-radius: 4px;
+  max-height: 55vh;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  background: #fff;
 }
 
 /* === Data Table === */
 #data-table {
   width: 100%;
   border-collapse: collapse;
-  font-family: 'Courier New', Courier, monospace;
+  font-family: 'SF Mono', 'Fira Code', 'Courier New', monospace;
   font-size: 12px;
 }
 
@@ -212,19 +306,30 @@ body {
 }
 
 #data-table thead th {
-  background-color: #f5f5f5;
-  border-bottom: 2px solid #ddd;
-  padding: 8px 10px;
+  background: #2d3436;
+  color: #dfe6e9;
+  padding: 10px 12px;
   text-align: left;
   font-weight: 600;
   white-space: nowrap;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  font-size: 12px;
-  color: #444;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border-bottom: none;
+}
+
+#data-table thead th:first-child {
+  border-radius: 8px 0 0 0;
+}
+
+#data-table thead th:last-child {
+  border-radius: 0 8px 0 0;
 }
 
 #data-table tbody tr {
-  border-bottom: 1px solid #eee;
+  border-bottom: 1px solid #f1f2f6;
+  transition: background-color 0.15s ease;
 }
 
 #data-table tbody tr:nth-child(odd) {
@@ -232,74 +337,221 @@ body {
 }
 
 #data-table tbody tr:nth-child(even) {
-  background-color: #f5f5f5;
+  background-color: #f8f9fa;
 }
 
 #data-table tbody tr:hover {
-  background-color: #e3f2fd;
+  background-color: #dfe6fd;
 }
 
 #data-table tbody td {
-  padding: 6px 10px;
+  padding: 8px 12px;
   white-space: nowrap;
+  color: #2d3436;
 }
 
 #data-table input[type="checkbox"] {
   cursor: pointer;
+  width: 15px;
+  height: 15px;
+  accent-color: #0984e3;
 }
 
 /* === Status Column Color Coding === */
 .status-match {
-  background-color: #c8e6c9;
+  background-color: #55efc4 !important;
+  color: #00695c;
+  font-weight: 600;
+  border-radius: 3px;
 }
 
 .status-mismatch {
-  background-color: #ffcdd2;
+  background-color: #fab1a0 !important;
+  color: #c0392b;
+  font-weight: 600;
+  border-radius: 3px;
 }
 
 .status-incomplete {
-  background-color: #fff9c4;
+  background-color: #ffeaa7 !important;
+  color: #856404;
+  font-weight: 600;
+  border-radius: 3px;
 }
 
 /* === Notification Area === */
 #notification-area {
   position: fixed;
-  bottom: 16px;
-  right: 16px;
-  z-index: 100;
+  bottom: 20px;
+  right: 20px;
+  z-index: 300;
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
 
 .notification {
-  padding: 10px 16px;
-  border-radius: 4px;
+  padding: 12px 18px;
+  border-radius: 8px;
   font-size: 13px;
-  max-width: 400px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  font-weight: 500;
+  max-width: 420px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
   animation: slideIn 0.3s ease;
+  backdrop-filter: blur(4px);
 }
 
 .notification.success {
-  background-color: #e8f5e9;
-  color: #2e7d32;
-  border: 1px solid #a5d6a7;
+  background-color: #00b894;
+  color: #fff;
+  border: none;
 }
 
 .notification.error {
-  background-color: #ffebee;
-  color: #c62828;
-  border: 1px solid #ef9a9a;
+  background-color: #d63031;
+  color: #fff;
+  border: none;
 }
 
 @keyframes slideIn {
   from {
     opacity: 0;
-    transform: translateX(20px);
+    transform: translateY(10px);
   }
   to {
     opacity: 1;
-    transform: translateX(0);
+    transform: translateY(0);
   }
+}
+
+/* === Modal Overlay === */
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background-color: rgba(45, 52, 54, 0.6);
+  backdrop-filter: blur(3px);
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.modal-content {
+  background: #fff;
+  border-radius: 12px;
+  padding: 28px;
+  width: 620px;
+  max-height: 85vh;
+  overflow-y: auto;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.2);
+}
+
+.modal-content h2 {
+  margin: 0 0 14px 0;
+  font-size: 20px;
+  font-weight: 700;
+  color: #2d3436;
+}
+
+.modal-note {
+  font-size: 12px;
+  color: #636e72;
+  background-color: #ffeaa7;
+  border: none;
+  border-radius: 6px;
+  padding: 10px 14px;
+  margin-bottom: 18px;
+  line-height: 1.5;
+}
+
+.modal-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.modal-form label {
+  display: flex;
+  flex-direction: column;
+  font-size: 13px;
+  font-weight: 600;
+  color: #2d3436;
+  gap: 4px;
+}
+
+.modal-form input,
+.modal-form select,
+.modal-form textarea {
+  padding: 8px 12px;
+  border: 1px solid #dfe6e9;
+  border-radius: 6px;
+  font-size: 13px;
+  font-family: inherit;
+  background: #fff;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.modal-form input:focus,
+.modal-form select:focus,
+.modal-form textarea:focus {
+  outline: none;
+  border-color: #6c5ce7;
+  box-shadow: 0 0 0 3px rgba(108, 92, 231, 0.15);
+}
+
+.modal-form input[readonly] {
+  background-color: #f8f9fa;
+  color: #636e72;
+  border-style: dashed;
+}
+
+.modal-buttons {
+  display: flex;
+  gap: 8px;
+  margin-top: 20px;
+  justify-content: flex-end;
+}
+
+.modal-buttons button {
+  padding: 9px 18px;
+  font-size: 13px;
+  font-weight: 600;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  color: #fff;
+  transition: all 0.2s ease;
+}
+
+#tcorp-open-btn {
+  background: #6c5ce7;
+}
+#tcorp-open-btn:hover {
+  background: #5b4cdb;
+}
+
+#tcorp-copy-btn {
+  background: #0984e3;
+}
+#tcorp-copy-btn:hover {
+  background: #0873c4;
+}
+
+#tcorp-export-csv-btn {
+  background: #00b894;
+}
+#tcorp-export-csv-btn:hover {
+  background: #00a381;
+}
+
+.modal-close-btn {
+  background-color: #b2bec3 !important;
+  color: #2d3436 !important;
+}
+
+.modal-close-btn:hover {
+  background-color: #95a5a6 !important;
 }

@@ -7,35 +7,178 @@ const state = {
   mergedRows: [],
   activeTab: 'All',
   selectedRowIndices: new Set(),
-  agentName: ''
+  agentName: '',
+  seller: {
+    companyId: '',
+    companyName: '',
+    mcid: '',
+    marketplaceId: ''
+  }
 };
 
 let saveAgentNameTimer = null;
 
 /* ===== Agent Name Persistence (Task 3) ===== */
 
+function isChromeAvailable() {
+  try {
+    return !!(chrome && chrome.storage && chrome.storage.local);
+  } catch (e) {
+    return false;
+  }
+}
+
 function loadAgentName() {
   return new Promise((resolve) => {
-    try {
-      chrome.storage.local.get('agentName', (result) => {
-        const name = result.agentName || '';
-        state.agentName = name;
+    // Try localStorage fallback first (always available)
+    const fallback = localStorage.getItem('agentName') || '';
+
+    if (isChromeAvailable()) {
+      try {
+        chrome.storage.local.get('agentName', (result) => {
+          if (chrome.runtime.lastError) {
+            // Context invalidated — use fallback
+            state.agentName = fallback;
+            const input = document.getElementById('agent-name');
+            if (input) input.value = fallback;
+            resolve(fallback);
+            return;
+          }
+          const name = result.agentName || fallback;
+          state.agentName = name;
+          const input = document.getElementById('agent-name');
+          if (input) input.value = name;
+          resolve(name);
+        });
+      } catch (e) {
+        state.agentName = fallback;
         const input = document.getElementById('agent-name');
-        if (input) input.value = name;
-        resolve(name);
-      });
-    } catch (e) {
-      resolve('');
+        if (input) input.value = fallback;
+        resolve(fallback);
+      }
+    } else {
+      state.agentName = fallback;
+      const input = document.getElementById('agent-name');
+      if (input) input.value = fallback;
+      resolve(fallback);
     }
   });
 }
 
 function saveAgentName(name) {
-  try {
-    chrome.storage.local.set({ agentName: name });
-  } catch (e) {
-    // silently fail
+  // Always save to localStorage as fallback
+  localStorage.setItem('agentName', name);
+  if (isChromeAvailable()) {
+    try {
+      chrome.storage.local.set({ agentName: name });
+    } catch (e) {
+      // Context invalidated — localStorage fallback already saved
+    }
   }
+}
+
+/* ===== Veeqo API - Fetch Seller Details (Requirement 16) ===== */
+
+async function fetchSellerDetails() {
+  try {
+    const opts = { credentials: 'include', headers: { 'Accept': 'application/json' } };
+
+    const [userRes, channelsRes] = await Promise.all([
+      fetch('https://app.veeqo.com/current_user', opts),
+      fetch('https://app.veeqo.com/channels', opts)
+    ]);
+
+    if (!userRes.ok || !channelsRes.ok) {
+      throw new Error('API request failed');
+    }
+
+    const userData = await userRes.json();
+    const channelsData = await channelsRes.json();
+
+    state.seller.companyId = String(userData.company && userData.company.id || '');
+    state.seller.companyName = String(userData.company && userData.company.name || '');
+
+    const usAmazon = channelsData.find(
+      ch => ch.type_code === 'amazon' && ch.marketplace_id === 'ATVPDKIKX0DER'
+    );
+
+    if (usAmazon) {
+      state.seller.mcid = String(usAmazon.seller_id || '');
+      state.seller.marketplaceId = String(usAmazon.marketplace_id || '');
+    } else {
+      state.seller.mcid = '';
+      state.seller.marketplaceId = '';
+    }
+
+    // Update UI
+    document.getElementById('seller-company-name').textContent = state.seller.companyName || '—';
+    document.getElementById('seller-company-id').textContent = state.seller.companyId || '—';
+    document.getElementById('seller-mcid').textContent = state.seller.mcid || '(no US Amazon channel)';
+    document.getElementById('seller-marketplace').textContent = state.seller.marketplaceId || '(no US Amazon channel)';
+  } catch (e) {
+    // Not logged in or network error — show warning in panel
+    document.getElementById('seller-company-name').textContent = '—';
+    document.getElementById('seller-company-id').textContent = '—';
+    document.getElementById('seller-mcid').textContent = '—';
+    document.getElementById('seller-marketplace').textContent = '—';
+    document.getElementById('seller-details-panel').style.cssText =
+      'display:flex;background-color:#fff3e0;border-color:#ffcc80;color:#e65100;';
+    document.getElementById('seller-company-name').textContent =
+      'Not logged into a Veeqo account — seller details unavailable';
+  }
+}
+
+/* ===== T.Corp Modal (Requirement 16) ===== */
+
+function openTCorpModal(selectedRows) {
+  const modal = document.getElementById('tcorp-modal');
+
+  // Auto-fill fields
+  document.getElementById('tcorp-mcid').value = state.seller.mcid;
+  document.getElementById('tcorp-company-id').value = state.seller.companyId;
+  document.getElementById('tcorp-seller-name').value = state.seller.companyName;
+  document.getElementById('tcorp-marketplace').value = state.seller.marketplaceId;
+  document.getElementById('tcorp-ticket-id').value = document.getElementById('intercom-ticket').value || '';
+
+  // Carrier from selected rows
+  const carriers = [...new Set(selectedRows.map(r => r.carrier).filter(c => c !== 'N/A'))];
+  document.getElementById('tcorp-carrier').value = carriers.join(', ');
+
+  // Ship date range
+  const dates = selectedRows.map(r => r.invoiceDate).filter(d => d && d !== 'N/A').sort();
+  const earliest = dates.length > 0 ? dates[0] : 'N/A';
+  const latest = dates.length > 0 ? dates[dates.length - 1] : 'N/A';
+  document.getElementById('tcorp-ship-date').value = earliest + ' to ' + latest;
+
+  // Amount
+  const amounts = selectedRows.map(r => (r.chargebackAmount === 'N/A' ? 0 : Number(r.chargebackAmount)));
+  const total = amounts.reduce((a, b) => a + b, 0);
+  document.getElementById('tcorp-amount').value = 'USD $' + total.toFixed(2);
+
+  // Defaults
+  document.getElementById('tcorp-seller-support').value = 'Carrier Chargebacks SOP v2.0';
+
+  modal.style.display = 'flex';
+}
+
+function getTCorpFormText() {
+  const fields = [
+    ['Seller ID (MCID)', document.getElementById('tcorp-mcid').value],
+    ['Company ID', document.getElementById('tcorp-company-id').value],
+    ['Veeqo Ticket ID', document.getElementById('tcorp-ticket-id').value],
+    ['Seller Display Name', document.getElementById('tcorp-seller-name').value],
+    ['Carrier Name', document.getElementById('tcorp-carrier').value],
+    ['Marketplace', document.getElementById('tcorp-marketplace').value],
+    ['Return/Outbound', document.getElementById('tcorp-return-outbound').value],
+    ['Order ID', 'See attached CSV'],
+    ['Tracking ID', 'See attached CSV'],
+    ['Ship date', document.getElementById('tcorp-ship-date').value],
+    ['Amount for dispute', document.getElementById('tcorp-amount').value],
+    ['Seller Issue Summary', document.getElementById('tcorp-issue-summary').value],
+    ['Seller Action', document.getElementById('tcorp-seller-action').value],
+    ['Seller Support', document.getElementById('tcorp-seller-support').value]
+  ];
+  return fields.map(([label, val]) => label + ': ' + val).join('\n');
 }
 
 /* ===== CSV and XLSX Parsers (Task 4.1) ===== */
@@ -598,8 +741,9 @@ function updateActionButtons() {
   }
   actionBar.style.display = 'flex';
 
-  const fedexBtn = document.getElementById('copy-fedex-email-btn');
-  const tcorpBtn = document.getElementById('copy-tcorp-btn');
+  const fedexBtn = document.getElementById('send-fedex-email-btn');
+  const fedexCsvBtn = document.getElementById('export-fedex-csv-btn');
+  const tcorpBtn = document.getElementById('create-tcorp-btn');
   const splatBtn = document.getElementById('copy-splat-btn');
   const exportBtn = document.getElementById('export-csv-btn');
 
@@ -607,17 +751,19 @@ function updateActionButtons() {
 
   if (tab === 'FedEx') {
     fedexBtn.style.display = '';
+    fedexCsvBtn.style.display = '';
     tcorpBtn.style.display = '';
     splatBtn.style.display = '';
     exportBtn.style.display = '';
   } else if (tab === 'Unmatched') {
     fedexBtn.style.display = 'none';
+    fedexCsvBtn.style.display = 'none';
     tcorpBtn.style.display = 'none';
     splatBtn.style.display = '';
     exportBtn.style.display = '';
   } else {
-    // All, UPS, USPS, DHL, OnTrac
     fedexBtn.style.display = 'none';
+    fedexCsvBtn.style.display = 'none';
     tcorpBtn.style.display = '';
     splatBtn.style.display = '';
     exportBtn.style.display = '';
@@ -647,6 +793,7 @@ function generateFedExEmail(rows, agentName) {
   });
 
   text += 'The seller is disputing these charges as they have reported that their dimensions were correct and have provided evidence (attached).\n\n';
+  text += 'REMINDER: Attach the CSV export and seller evidence before sending.\n\n';
   text += 'Thank you, ' + agentName;
 
   return text;
@@ -761,8 +908,10 @@ function getSelectedRows() {
 }
 
 function wireActionButtons() {
-  // Copy FedEx Email
-  document.getElementById('copy-fedex-email-btn').addEventListener('click', async () => {
+  const MAILTO_URL_LIMIT = 2000;
+
+  // Send FedEx Email (mailto with fallback)
+  document.getElementById('send-fedex-email-btn').addEventListener('click', async () => {
     try {
       const selected = getSelectedRows();
       if (selected.length === 0) {
@@ -774,27 +923,120 @@ function wireActionButtons() {
         showNotification('Please enter your name before generating the email template.', 'error');
         return;
       }
-      const text = generateFedExEmail(selected, agentName);
-      await navigator.clipboard.writeText(text);
-      showNotification('Copied to clipboard!', 'success');
+      const ticket = (document.getElementById('intercom-ticket').value || '').trim();
+      const subject = 'Veeqo Chargebacks Dispute' + (ticket ? ' ' + ticket : '');
+      const body = generateFedExEmail(selected, agentName);
+      const to = 'quickresponse15@fedex.com';
+
+      const fullMailto = 'mailto:' + encodeURIComponent(to)
+        + '?subject=' + encodeURIComponent(subject)
+        + '&body=' + encodeURIComponent(body);
+
+      if (fullMailto.length <= MAILTO_URL_LIMIT) {
+        window.open(fullMailto, '_blank');
+      } else {
+        // Body too long — copy to clipboard and open mailto with just To + Subject
+        await navigator.clipboard.writeText(body);
+        const shortMailto = 'mailto:' + encodeURIComponent(to)
+          + '?subject=' + encodeURIComponent(subject);
+        window.open(shortMailto, '_blank');
+        showNotification('Email body copied to clipboard — paste into the email.', 'success');
+      }
     } catch (e) {
-      showNotification('Could not copy to clipboard. Please try again.', 'error');
+      showNotification('Could not open email client. Please try again.', 'error');
     }
   });
 
-  // Copy T.Corp Fields
-  document.getElementById('copy-tcorp-btn').addEventListener('click', async () => {
+  // Export FedEx CSV (selected rows only)
+  document.getElementById('export-fedex-csv-btn').addEventListener('click', () => {
     try {
       const selected = getSelectedRows();
       if (selected.length === 0) {
         showNotification('Please select at least one row.', 'error');
         return;
       }
-      const text = generateTCorpFields(selected);
+      exportCSV(selected, 'FedEx-Selected');
+    } catch (e) {
+      showNotification('Could not export CSV. Please try again.', 'error');
+    }
+  });
+
+  // Create T.Corp (opens modal)
+  document.getElementById('create-tcorp-btn').addEventListener('click', () => {
+    const selected = getSelectedRows();
+    if (selected.length === 0) {
+      showNotification('Please select at least one row.', 'error');
+      return;
+    }
+    openTCorpModal(selected);
+  });
+
+  // T.Corp Modal — Copy All Fields
+  document.getElementById('tcorp-copy-btn').addEventListener('click', async () => {
+    try {
+      const text = getTCorpFormText();
       await navigator.clipboard.writeText(text);
-      showNotification('Copied to clipboard!', 'success');
+      showNotification('T.Corp fields copied to clipboard!', 'success');
     } catch (e) {
       showNotification('Could not copy to clipboard. Please try again.', 'error');
+    }
+  });
+
+  // T.Corp Modal — Open T.Corp & Auto-fill
+  document.getElementById('tcorp-open-btn').addEventListener('click', async () => {
+    try {
+      const description = getTCorpFormText();
+      const data = {
+        mcid: document.getElementById('tcorp-mcid').value,
+        companyId: document.getElementById('tcorp-company-id').value,
+        ticketId: document.getElementById('tcorp-ticket-id').value,
+        sellerName: document.getElementById('tcorp-seller-name').value,
+        carrier: document.getElementById('tcorp-carrier').value,
+        marketplace: document.getElementById('tcorp-marketplace').value,
+        returnOutbound: document.getElementById('tcorp-return-outbound').value,
+        shipDate: document.getElementById('tcorp-ship-date').value,
+        amount: document.getElementById('tcorp-amount').value,
+        issueSummary: document.getElementById('tcorp-issue-summary').value,
+        sellerAction: document.getElementById('tcorp-seller-action').value,
+        sellerSupport: document.getElementById('tcorp-seller-support').value,
+        description: description
+      };
+
+      await chrome.storage.local.set({ tcorpAutofill: data });
+
+      const tcorpUrl = 'https://t.corp.amazon.com/create/templates/21a64813-829d-4d9f-801b-b56e22f41c26';
+      window.open(tcorpUrl, '_blank');
+
+      showNotification('T.Corp page opened — fields will auto-fill when the page loads.', 'success');
+      document.getElementById('tcorp-modal').style.display = 'none';
+    } catch (e) {
+      showNotification('Could not open T.Corp. Please try again.', 'error');
+    }
+  });
+
+  // T.Corp Modal — Export Selected as CSV
+  document.getElementById('tcorp-export-csv-btn').addEventListener('click', () => {
+    try {
+      const selected = getSelectedRows();
+      if (selected.length === 0) {
+        showNotification('No rows selected for export.', 'error');
+        return;
+      }
+      exportCSV(selected, 'TCorp-Selected');
+    } catch (e) {
+      showNotification('Could not export CSV. Please try again.', 'error');
+    }
+  });
+
+  // T.Corp Modal — Close
+  document.getElementById('tcorp-close-btn').addEventListener('click', () => {
+    document.getElementById('tcorp-modal').style.display = 'none';
+  });
+
+  // Close modal on overlay click
+  document.getElementById('tcorp-modal').addEventListener('click', (e) => {
+    if (e.target === document.getElementById('tcorp-modal')) {
+      document.getElementById('tcorp-modal').style.display = 'none';
     }
   });
 
@@ -819,7 +1061,7 @@ function wireActionButtons() {
     try {
       const filtered = filterByTab(state.mergedRows, state.activeTab);
       if (filtered.length === 0) {
-        showNotification('Please select at least one row.', 'error');
+        showNotification('No rows to export.', 'error');
         return;
       }
       exportCSV(filtered, state.activeTab);
@@ -838,8 +1080,9 @@ function wireTabHandlers() {
       tabs.forEach(t => t.classList.remove('active'));
       tabBtn.classList.add('active');
       state.activeTab = tabBtn.dataset.tab;
-      state.selectedRowIndices = new Set();
       const filtered = filterByTab(state.mergedRows, state.activeTab);
+      // Select all rows by default on tab switch
+      state.selectedRowIndices = new Set(filtered.map((_, i) => i));
       renderTable(filtered);
     });
   });
@@ -854,8 +1097,11 @@ function wireMergeButton() {
       const merged = mergeData(state.taskEngineRows, state.datanetRows);
       merged.forEach(calculateFields);
       state.mergedRows = merged;
-      state.selectedRowIndices = new Set();
       state.activeTab = 'All';
+
+      // Select all rows by default
+      const filtered = filterByTab(merged, 'All');
+      state.selectedRowIndices = new Set(filtered.map((_, i) => i));
 
       // Reset active tab UI
       const tabs = document.querySelectorAll('#tab-bar .tab');
@@ -869,7 +1115,6 @@ function wireMergeButton() {
       }
 
       updateTabCounts(state.mergedRows);
-      const filtered = filterByTab(state.mergedRows, state.activeTab);
       renderTable(filtered);
     } catch (e) {
       showNotification('An error occurred during merge. Please check your files.', 'error');
@@ -891,6 +1136,9 @@ function init() {
       saveAgentName(agentInput.value);
     }, 500);
   });
+
+  // Auto-fetch seller details on load
+  fetchSellerDetails();
 
   setupUploadHandlers();
   wireTabHandlers();

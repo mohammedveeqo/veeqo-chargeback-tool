@@ -10,8 +10,18 @@
   <!-- Header -->
   <header id="app-header">
     <h1>Veeqo Chargeback Tool</h1>
-    <input type="text" id="agent-name" placeholder="Your Name" aria-label="Agent Name">
+    <div id="header-inputs">
+      <input type="text" id="agent-name" placeholder="Your Name" aria-label="Agent Name">
+      <input type="text" id="intercom-ticket" placeholder="Intercom Ticket #" aria-label="Intercom Ticket Number">
+    </div>
   </header>
+
+  <!-- Seller Details Panel (always visible, populated on load) -->
+  <section id="seller-details-panel">
+    <span><strong>Company:</strong> <span id="seller-company-name">Loading...</span> (ID: <span id="seller-company-id">...</span>)</span>
+    <span><strong>MCID:</strong> <span id="seller-mcid">...</span></span>
+    <span><strong>Marketplace:</strong> <span id="seller-marketplace">...</span></span>
+  </section>
 
   <!-- File Upload Areas -->
   <section id="upload-section">
@@ -36,8 +46,9 @@
 
   <!-- Action Buttons Bar (hidden until merge completes) -->
   <section id="action-buttons" style="display: none;">
-    <button id="copy-fedex-email-btn">Copy FedEx Email</button>
-    <button id="copy-tcorp-btn">Copy T.Corp Fields</button>
+    <button id="send-fedex-email-btn">Send FedEx Email</button>
+    <button id="export-fedex-csv-btn">Export FedEx CSV</button>
+    <button id="create-tcorp-btn">Create T.Corp</button>
     <button id="copy-splat-btn">Copy SPLAT T.Corp Fields</button>
     <button id="export-csv-btn">Export Tab as CSV</button>
   </section>
@@ -63,6 +74,39 @@
       <tbody></tbody>
     </table>
   </section>
+
+  <!-- T.Corp Modal -->
+  <div id="tcorp-modal" class="modal-overlay" style="display: none;">
+    <div class="modal-content">
+      <h2>Create T.Corp</h2>
+      <p class="modal-note">Order IDs, Tracking IDs, and shipment details are in the attached CSV. Click "Export Selected as CSV" to generate the attachment.</p>
+      <div class="modal-form">
+        <label>Seller ID (MCID):<input type="text" id="tcorp-mcid" placeholder="MCID"></label>
+        <label>Company ID:<input type="text" id="tcorp-company-id" placeholder="Company ID"></label>
+        <label>Veeqo Ticket ID:<input type="text" id="tcorp-ticket-id" placeholder="Intercom ticket number"></label>
+        <label>Seller Display Name:<input type="text" id="tcorp-seller-name" placeholder="Seller name"></label>
+        <label>Carrier Name:<input type="text" id="tcorp-carrier" placeholder="Carrier"></label>
+        <label>Marketplace:<input type="text" id="tcorp-marketplace" placeholder="Marketplace ID"></label>
+        <label>Return/Outbound:
+          <select id="tcorp-return-outbound">
+            <option value="Outbound">Outbound</option>
+            <option value="Return">Return</option>
+          </select>
+        </label>
+        <label>Ship date:<input type="text" id="tcorp-ship-date" readonly></label>
+        <label>Amount for dispute:<input type="text" id="tcorp-amount" readonly></label>
+        <label>Seller Support:<input type="text" id="tcorp-seller-support" value="Carrier Chargebacks SOP v2.0"></label>
+        <label>Seller Issue Summary:<textarea id="tcorp-issue-summary" rows="3" placeholder="Describe the seller's issue"></textarea></label>
+        <label>Seller Action:<textarea id="tcorp-seller-action" rows="3" placeholder="Describe the action taken"></textarea></label>
+      </div>
+      <div class="modal-buttons">
+        <button id="tcorp-open-btn">Open T.Corp & Auto-fill</button>
+        <button id="tcorp-copy-btn">Copy All Fields</button>
+        <button id="tcorp-export-csv-btn">Export Selected as CSV</button>
+        <button id="tcorp-close-btn" class="modal-close-btn">Close</button>
+      </div>
+    </div>
+  </div>
 
   <!-- Notification Area -->
   <div id="notification-area"></div>
