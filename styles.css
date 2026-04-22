@@ -128,8 +128,13 @@ body {
 }
 
 .upload-area input[type="file"] {
+  display: none;
+}
+
+.upload-area .upload-hint {
   font-size: 13px;
-  color: #636e72;
+  color: #b2bec3;
+  margin-top: 4px;
 }
 
 .upload-filename {
@@ -210,24 +215,32 @@ body {
   background: #f9ca24;
 }
 
-#create-tcorp-btn {
+#create-dispute-tcorp-btn {
   background: #6c5ce7;
 }
-#create-tcorp-btn:hover {
+#create-dispute-tcorp-btn:hover {
   background: #5b4cdb;
 }
 
-#copy-splat-btn {
+#create-splat-tcorp-btn {
   background: #00b894;
 }
-#copy-splat-btn:hover {
+#create-splat-tcorp-btn:hover {
   background: #00a381;
 }
 
-#export-csv-btn {
+#export-dispute-csv-btn {
+  background: #fdcb6e;
+  color: #2d3436 !important;
+}
+#export-dispute-csv-btn:hover {
+  background: #f9ca24;
+}
+
+#export-splat-csv-btn {
   background: #636e72;
 }
-#export-csv-btn:hover {
+#export-splat-csv-btn:hover {
   background: #535c60;
 }
 

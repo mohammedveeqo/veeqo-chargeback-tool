@@ -29,12 +29,14 @@
     <div class="upload-area" id="task-engine-upload">
       <label>Upload Task Engine Export</label>
       <input type="file" id="task-engine-file" accept=".csv,.xlsx" aria-label="Upload Task Engine Export">
+      <p class="upload-hint">Click or drag file here (.csv, .xlsx)</p>
       <p class="upload-filename" id="task-engine-filename"></p>
       <p class="upload-error" id="task-engine-error"></p>
     </div>
     <div class="upload-area" id="datanet-upload">
       <label>Upload Datanet Export</label>
       <input type="file" id="datanet-file" accept=".csv,.xlsx" aria-label="Upload Datanet Export">
+      <p class="upload-hint">Click or drag file here (.csv, .xlsx)</p>
       <p class="upload-filename" id="datanet-filename"></p>
       <p class="upload-error" id="datanet-error"></p>
     </div>
@@ -48,10 +50,10 @@
   <!-- Action Buttons Bar (hidden until merge completes) -->
   <section id="action-buttons" style="display: none;">
     <button id="send-fedex-email-btn">Send FedEx Email</button>
-    <button id="export-fedex-csv-btn">Export FedEx CSV</button>
-    <button id="create-tcorp-btn">Create T.Corp</button>
-    <button id="copy-splat-btn">Copy SPLAT T.Corp Fields</button>
-    <button id="export-csv-btn">Export Tab as CSV</button>
+    <button id="create-dispute-tcorp-btn">Create Dispute T.Corp</button>
+    <button id="create-splat-tcorp-btn">Create SPLAT T.Corp</button>
+    <button id="export-dispute-csv-btn">Export Dispute CSV</button>
+    <button id="export-splat-csv-btn">Export SPLAT CSV</button>
   </section>
 
   <!-- Tab Bar -->
@@ -103,7 +105,6 @@
       <div class="modal-buttons">
         <button id="tcorp-open-btn">Open T.Corp & Auto-fill</button>
         <button id="tcorp-copy-btn">Copy All Fields</button>
-        <button id="tcorp-export-csv-btn">Export Selected as CSV</button>
         <button id="tcorp-close-btn" class="modal-close-btn">Close</button>
       </div>
     </div>

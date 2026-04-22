@@ -1,10 +1,10 @@
 // Veeqo Chargeback Tool — T.Corp Auto-fill Content Script
 // Runs on https://t.corp.amazon.com/create/* pages
+// Handles both Dispute and SPLAT templates
 
 (function () {
   'use strict';
 
-  const TCORP_TEMPLATE_URL = 'https://t.corp.amazon.com/create/templates/21a64813-829d-4d9f-801b-b56e22f41c26';
   const MAX_WAIT_MS = 15000;
   const POLL_INTERVAL_MS = 500;
 
@@ -23,18 +23,13 @@
     banner.textContent = message;
     document.body.prepend(banner);
     if (!isError) {
-      setTimeout(() => { if (banner.parentNode) banner.remove(); }, 15000);
+      setTimeout(() => { if (banner.parentNode) banner.remove(); }, 20000);
     }
   }
 
   function setNativeValue(el, value) {
-    // Use native setter to bypass React/framework controlled inputs
-    const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
-      window.HTMLInputElement.prototype, 'value'
-    );
-    const nativeTextAreaValueSetter = Object.getOwnPropertyDescriptor(
-      window.HTMLTextAreaElement.prototype, 'value'
-    );
+    const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
+    const nativeTextAreaValueSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value');
     const setter = el.tagName === 'TEXTAREA' ? nativeTextAreaValueSetter : nativeInputValueSetter;
     if (setter && setter.set) {
       setter.set.call(el, value);
@@ -44,17 +39,29 @@
     dispatchEvents(el);
   }
 
-  function fillTitle(titleEl, data) {
+  function waitForElement(selector, timeoutMs) {
+    return new Promise((resolve, reject) => {
+      const el = document.querySelector(selector);
+      if (el) { resolve(el); return; }
+      const start = Date.now();
+      const interval = setInterval(() => {
+        const el = document.querySelector(selector);
+        if (el) { clearInterval(interval); resolve(el); }
+        else if (Date.now() - start > timeoutMs) { clearInterval(interval); reject(new Error('Timeout')); }
+      }, POLL_INTERVAL_MS);
+    });
+  }
+
+  // === DISPUTE TEMPLATE ===
+  function buildDisputeTitle(data) {
     const direction = data.returnOutbound || 'Outbound';
     const issueType = direction === 'Return'
       ? 'MSS Return Off-Manifest Dispute'
       : 'MSS Outbound Off-Manifest Dispute';
-    const title = data.carrier + '_' + direction + '_' + issueType + '_CID:' + data.companyId + '_Veeqo';
-    setNativeValue(titleEl, title);
+    return data.carrier + '_' + direction + '_' + issueType + '_CID:' + data.companyId + '_Veeqo';
   }
 
-  // Map of template bullet prefixes to data keys
-  function buildReplacements(data) {
+  function getDisputeReplacements(data) {
     return [
       { prefix: 'Seller ID (MCID):', value: data.mcid },
       { prefix: 'Company ID:', value: data.companyId },
@@ -73,17 +80,39 @@
     ];
   }
 
-  function fillDescription(textareaEl, data) {
-    let text = textareaEl.value || '';
-    const replacements = buildReplacements(data);
+  // === SPLAT TEMPLATE ===
+  function buildSplatTitle(data) {
+    const direction = data.returnOutbound || 'Outbound';
+    return 'Veeqo_' + data.carrier + '_' + direction + '_Amazon Order ID(s) SPLAT Support_CID: ' + data.companyId;
+  }
 
-    // Process line by line to preserve newlines between bullets
+  function getSplatReplacements(data) {
+    return [
+      { prefix: 'Marketplace:', value: data.marketplace },
+      { prefix: 'Seller ID/MCID', value: data.mcid },
+      { prefix: 'Tracking ID:', value: 'See attached CSV' },
+      { prefix: 'Amount:', value: data.amount },
+      { prefix: 'Credit/Debit:', value: 'Credit' },
+      { prefix: 'Order ID:', value: 'See attached CSV' },
+      { prefix: 'Company ID:', value: data.companyId },
+      { prefix: 'Veeqo Ticket ID:', value: data.ticketId },
+      { prefix: 'Seller Display Name:', value: data.sellerName },
+      { prefix: 'Carrier Name:', value: data.carrier },
+      { prefix: 'Return/Outbound:', value: data.returnOutbound },
+      { prefix: 'Return/ Outbound:', value: data.returnOutbound },
+      { prefix: 'Ship date', value: data.shipDate },
+      { prefix: 'Email Title:', value: data.emailTitle || 'N/A' },
+      { prefix: 'Related SIM', value: data.relatedSim || 'N/A' }
+    ];
+  }
+
+  // === SHARED FILL LOGIC ===
+  function fillDescription(textareaEl, replacements) {
+    let text = textareaEl.value || '';
     const lines = text.split('\n');
     const filledLines = lines.map(line => {
       for (const { prefix, value } of replacements) {
         if (!value) continue;
-        // Check if this line contains the bullet prefix (with any bullet char: •, *, -)
-        // Match: optional bullet char + optional spaces + prefix + optional trailing content
         const escapedPrefix = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         const pattern = new RegExp('^(\\s*(?:[•*-]\\s*)?' + escapedPrefix + ')\\s*$');
         if (pattern.test(line)) {
@@ -92,58 +121,34 @@
       }
       return line;
     });
-
     setNativeValue(textareaEl, filledLines.join('\n'));
-  }
-
-  function waitForElement(selector, timeoutMs) {
-    return new Promise((resolve, reject) => {
-      const el = document.querySelector(selector);
-      if (el) { resolve(el); return; }
-
-      const start = Date.now();
-      const interval = setInterval(() => {
-        const el = document.querySelector(selector);
-        if (el) {
-          clearInterval(interval);
-          resolve(el);
-        } else if (Date.now() - start > timeoutMs) {
-          clearInterval(interval);
-          reject(new Error('Timeout waiting for ' + selector));
-        }
-      }, POLL_INTERVAL_MS);
-    });
   }
 
   async function run() {
     try {
       const result = await chrome.storage.local.get('tcorpAutofill');
       const data = result.tcorpAutofill;
-      if (!data) return; // No data to auto-fill
+      if (!data) return;
 
-      // Clear storage immediately so it doesn't re-fill on refresh
       await chrome.storage.local.remove('tcorpAutofill');
 
-      // Wait for form fields to appear
       let titleEl, descEl;
       try {
         titleEl = await waitForElement('input#ticket-title', MAX_WAIT_MS);
         descEl = await waitForElement('textarea#markdown-editor', MAX_WAIT_MS);
       } catch (e) {
-        // Fields not found — fallback to clipboard
         const fallbackText = data.description || '';
-        try {
-          await navigator.clipboard.writeText(fallbackText);
-        } catch (clipErr) {
-          // Can't write clipboard either
-        }
+        try { await navigator.clipboard.writeText(fallbackText); } catch (clipErr) {}
         showBanner('Auto-fill failed — please paste manually. Data copied to clipboard.', true);
         return;
       }
 
-      // Fill the fields
-      fillTitle(titleEl, data);
-      fillDescription(descEl, data);
+      const isSplat = data.templateType === 'splat';
+      const title = isSplat ? buildSplatTitle(data) : buildDisputeTitle(data);
+      const replacements = isSplat ? getSplatReplacements(data) : getDisputeReplacements(data);
+
+      setNativeValue(titleEl, title);
+      fillDescription(descEl, replacements);
 
       showBanner(
         'Fields auto-filled by Veeqo Chargeback Tool — please review before submitting. ' +

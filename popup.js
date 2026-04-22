@@ -488,45 +488,34 @@ function performMerge() {
 }
 
 function setupUploadHandlers() {
-  // Task Engine file input
   const teFile = document.getElementById('task-engine-file');
+  const dnFile = document.getElementById('datanet-file');
+  const teArea = document.getElementById('task-engine-upload');
+  const dnArea = document.getElementById('datanet-upload');
+
+  // Click anywhere on the box to open file picker
+  teArea.addEventListener('click', () => teFile.click());
+  dnArea.addEventListener('click', () => dnFile.click());
+
   teFile.addEventListener('change', (e) => {
     if (e.target.files.length > 0) handleFileUpload(e.target.files[0], 'task-engine');
   });
-
-  // Datanet file input
-  const dnFile = document.getElementById('datanet-file');
   dnFile.addEventListener('change', (e) => {
     if (e.target.files.length > 0) handleFileUpload(e.target.files[0], 'datanet');
   });
 
-  // Drag and drop for Task Engine
-  const teArea = document.getElementById('task-engine-upload');
-  teArea.addEventListener('dragover', (e) => {
-    e.preventDefault();
-    teArea.classList.add('dragover');
-  });
-  teArea.addEventListener('dragleave', () => {
-    teArea.classList.remove('dragover');
-  });
+  // Drag and drop
+  teArea.addEventListener('dragover', (e) => { e.preventDefault(); teArea.classList.add('dragover'); });
+  teArea.addEventListener('dragleave', () => { teArea.classList.remove('dragover'); });
   teArea.addEventListener('drop', (e) => {
-    e.preventDefault();
-    teArea.classList.remove('dragover');
+    e.preventDefault(); teArea.classList.remove('dragover');
     if (e.dataTransfer.files.length > 0) handleFileUpload(e.dataTransfer.files[0], 'task-engine');
   });
 
-  // Drag and drop for Datanet
-  const dnArea = document.getElementById('datanet-upload');
-  dnArea.addEventListener('dragover', (e) => {
-    e.preventDefault();
-    dnArea.classList.add('dragover');
-  });
-  dnArea.addEventListener('dragleave', () => {
-    dnArea.classList.remove('dragover');
-  });
+  dnArea.addEventListener('dragover', (e) => { e.preventDefault(); dnArea.classList.add('dragover'); });
+  dnArea.addEventListener('dragleave', () => { dnArea.classList.remove('dragover'); });
   dnArea.addEventListener('drop', (e) => {
-    e.preventDefault();
-    dnArea.classList.remove('dragover');
+    e.preventDefault(); dnArea.classList.remove('dragover');
     if (e.dataTransfer.files.length > 0) handleFileUpload(e.dataTransfer.files[0], 'datanet');
   });
 }
@@ -539,6 +528,7 @@ function mapTaskEngineRow(raw) {
   return {
     trackingNumber: String(raw.tracking_number || ''),
     shipmentId: String(raw.shipment_id || ''),
+    orderId: raw.order_id !== undefined ? String(raw.order_id || '') : '',
     sellerWeight: isNaN(weight) ? 0 : Math.round((weight / 453.592) * 100) / 100,
     sellerLength: isNaN(parseFloat(raw.length)) ? 0 : parseFloat(raw.length),
     sellerWidth: isNaN(parseFloat(raw.width)) ? 0 : parseFloat(raw.width),
@@ -593,6 +583,7 @@ function mergeData(taskRows, datanetRows) {
       merged.push({
         trackingNumber: teRow.trackingNumber,
         shipmentId: teRow.shipmentId,
+        orderId: teRow.orderId || '',
         sellerWeight: teRow.sellerWeight,
         sellerLength: teRow.sellerLength,
         sellerWidth: teRow.sellerWidth,
@@ -620,6 +611,7 @@ function mergeData(taskRows, datanetRows) {
       merged.push({
         trackingNumber: teRow.trackingNumber,
         shipmentId: teRow.shipmentId,
+        orderId: teRow.orderId || '',
         sellerWeight: teRow.sellerWeight,
         sellerLength: teRow.sellerLength,
         sellerWidth: teRow.sellerWidth,
@@ -650,6 +642,7 @@ function mergeData(taskRows, datanetRows) {
     merged.push({
       trackingNumber: dnRow.trackingNumber,
       shipmentId: 'N/A',
+      orderId: '',
       sellerWeight: 'N/A',
       sellerLength: 'N/A',
       sellerWidth: 'N/A',
@@ -890,31 +883,38 @@ function updateActionButtons() {
   actionBar.style.display = 'flex';
 
   const fedexBtn = document.getElementById('send-fedex-email-btn');
-  const fedexCsvBtn = document.getElementById('export-fedex-csv-btn');
-  const tcorpBtn = document.getElementById('create-tcorp-btn');
-  const splatBtn = document.getElementById('copy-splat-btn');
-  const exportBtn = document.getElementById('export-csv-btn');
+  const disputeBtn = document.getElementById('create-dispute-tcorp-btn');
+  const splatBtn = document.getElementById('create-splat-tcorp-btn');
+  const disputeCsvBtn = document.getElementById('export-dispute-csv-btn');
+  const splatCsvBtn = document.getElementById('export-splat-csv-btn');
 
   const tab = state.activeTab;
 
   if (tab === 'FedEx') {
     fedexBtn.style.display = '';
-    fedexCsvBtn.style.display = '';
-    tcorpBtn.style.display = '';
+    disputeBtn.style.display = 'none';
     splatBtn.style.display = '';
-    exportBtn.style.display = '';
+    disputeCsvBtn.style.display = '';
+    splatCsvBtn.style.display = '';
   } else if (tab === 'Unmatched') {
     fedexBtn.style.display = 'none';
-    fedexCsvBtn.style.display = 'none';
-    tcorpBtn.style.display = 'none';
-    splatBtn.style.display = '';
-    exportBtn.style.display = '';
-  } else {
+    disputeBtn.style.display = 'none';
+    splatBtn.style.display = 'none';
+    disputeCsvBtn.style.display = '';
+    splatCsvBtn.style.display = '';
+  } else if (tab === 'All') {
     fedexBtn.style.display = 'none';
-    fedexCsvBtn.style.display = 'none';
-    tcorpBtn.style.display = '';
+    disputeBtn.style.display = '';
     splatBtn.style.display = '';
-    exportBtn.style.display = '';
+    disputeCsvBtn.style.display = '';
+    splatCsvBtn.style.display = '';
+  } else {
+    // UPS, USPS, DHL, OnTrac
+    fedexBtn.style.display = 'none';
+    disputeBtn.style.display = '';
+    splatBtn.style.display = '';
+    disputeCsvBtn.style.display = '';
+    splatCsvBtn.style.display = '';
   }
 }
 
@@ -1152,6 +1152,80 @@ create temp table final as
 Select * from final;`;
 }
 
+/* ===== Dispute CSV Export (Requirement 20) ===== */
+
+function formatDateMMDDYYYY(dateStr) {
+  if (!dateStr || dateStr === 'N/A') return 'N/A';
+  // Try to parse various date formats
+  const d = new Date(dateStr);
+  if (isNaN(d.getTime())) return dateStr;
+  return String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0') + '-' + d.getFullYear();
+}
+
+function exportDisputeCSV(rows, tabName) {
+  const headers = [
+    'Tracking ID', 'Order ID', 'Ship Method',
+    'Seller_Dimensions (IN)', 'Seller_Weight (LB)',
+    'Carrier Audit_Dimensions (IN)', 'Carrier Audit_Weight (LB)',
+    'Carrier Dim_On_Tracking Site (IN)', 'Carrier Weight_On_Tracking Site (LB)',
+    'Seller Dispute Amount', 'Invoice Date'
+  ];
+  const csvRows = [headers.join(',')];
+  rows.forEach(r => {
+    const sellerDims = (r.sellerLength !== 'N/A' ? r.sellerLength + ' X ' + r.sellerWidth + ' X ' + r.sellerHeight : 'N/A');
+    const carrierDims = (r.carrierAuditedLength !== 'N/A' ? r.carrierAuditedLength + ' X ' + r.carrierAuditedWidth + ' X ' + r.carrierAuditedHeight : 'N/A');
+    const amt = r.chargebackAmount === 'N/A' ? 'N/A' : '$' + Number(r.chargebackAmount).toFixed(2);
+    const vals = [
+      r.trackingNumber, r.orderId || '', r.serviceName || '',
+      sellerDims, r.sellerWeight !== 'N/A' ? r.sellerWeight : 'N/A',
+      carrierDims, r.carrierAuditedWeight !== 'N/A' ? r.carrierAuditedWeight : 'N/A',
+      'N/A', 'N/A',
+      amt, formatDateMMDDYYYY(r.invoiceDate)
+    ];
+    csvRows.push(vals.map(v => {
+      const s = String(v);
+      return (s.includes(',') || s.includes('"')) ? '"' + s.replace(/"/g, '""') + '"' : s;
+    }).join(','));
+  });
+  downloadCSV(csvRows.join('\n'), 'veeqo-dispute-' + tabName);
+}
+
+function exportSplatCSV(rows) {
+  const headers = ['MarketplaceId', 'MerchantId', 'ReferenceId', 'AccountType', 'Amount', 'Credit/Debit', 'OrderId'];
+  const csvRows = [headers.join(',')];
+  rows.forEach(r => {
+    const amt = r.chargebackAmount === 'N/A' ? '' : Number(r.chargebackAmount).toFixed(2);
+    const vals = [
+      state.seller.marketplaceId || 'ATVPDKIKX0DER',
+      state.seller.mcid || '',
+      r.trackingNumber,
+      '',
+      amt,
+      'Credit',
+      r.orderId || ''
+    ];
+    csvRows.push(vals.map(v => {
+      const s = String(v);
+      return (s.includes(',') || s.includes('"')) ? '"' + s.replace(/"/g, '""') + '"' : s;
+    }).join(','));
+  });
+  downloadCSV(csvRows.join('\n'), 'veeqo-splat');
+}
+
+function downloadCSV(csvString, prefix) {
+  const blob = new Blob([csvString], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const today = new Date();
+  const dateStr = today.getFullYear() + '-' + String(today.getMonth() + 1).padStart(2, '0') + '-' + String(today.getDate()).padStart(2, '0');
+  a.href = url;
+  a.download = prefix + '-' + dateStr + '.csv';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 /* ===== Notification System (Task 13) ===== */
 
 function showNotification(message, type) {
@@ -1178,66 +1252,62 @@ function getSelectedRows() {
 
 function wireActionButtons() {
   const MAILTO_URL_LIMIT = 2000;
+  const DISPUTE_OUTBOUND_URL = 'https://t.corp.amazon.com/create/templates/21a64813-829d-4d9f-801b-b56e22f41c26';
+  const DISPUTE_RETURN_URL = 'https://t.corp.amazon.com/create/templates/e5cd6e2a-d57e-4d10-a570-ba647cf43d86';
+  const SPLAT_URL = 'https://t.corp.amazon.com/create/templates/d60194e4-8411-4804-ad79-25de2113e164';
 
-  // Send FedEx Email (mailto with fallback)
+  // Send FedEx Email
   document.getElementById('send-fedex-email-btn').addEventListener('click', async () => {
     try {
       const selected = getSelectedRows();
-      if (selected.length === 0) {
-        showNotification('Please select at least one row.', 'error');
-        return;
-      }
+      if (selected.length === 0) { showNotification('Please select at least one row.', 'error'); return; }
       const agentName = state.agentName.trim();
-      if (!agentName) {
-        showNotification('Please enter your name before generating the email template.', 'error');
-        return;
-      }
+      if (!agentName) { showNotification('Please enter your name before generating the email template.', 'error'); return; }
       const ticket = (document.getElementById('intercom-ticket').value || '').trim();
       const subject = 'Veeqo Chargebacks Dispute' + (ticket ? ' ' + ticket : '');
       const body = generateFedExEmail(selected, agentName);
       const to = 'quickresponse15@fedex.com';
-
-      const fullMailto = 'mailto:' + encodeURIComponent(to)
-        + '?subject=' + encodeURIComponent(subject)
-        + '&body=' + encodeURIComponent(body);
-
+      const fullMailto = 'mailto:' + encodeURIComponent(to) + '?subject=' + encodeURIComponent(subject) + '&body=' + encodeURIComponent(body);
       if (fullMailto.length <= MAILTO_URL_LIMIT) {
         window.open(fullMailto, '_blank');
       } else {
-        // Body too long — copy to clipboard and open mailto with just To + Subject
         await navigator.clipboard.writeText(body);
-        const shortMailto = 'mailto:' + encodeURIComponent(to)
-          + '?subject=' + encodeURIComponent(subject);
-        window.open(shortMailto, '_blank');
+        window.open('mailto:' + encodeURIComponent(to) + '?subject=' + encodeURIComponent(subject), '_blank');
         showNotification('Email body copied to clipboard — paste into the email.', 'success');
       }
-    } catch (e) {
-      showNotification('Could not open email client. Please try again.', 'error');
-    }
+    } catch (e) { showNotification('Could not open email client. Please try again.', 'error'); }
   });
 
-  // Export FedEx CSV (selected rows only)
-  document.getElementById('export-fedex-csv-btn').addEventListener('click', () => {
-    try {
-      const selected = getSelectedRows();
-      if (selected.length === 0) {
-        showNotification('Please select at least one row.', 'error');
-        return;
-      }
-      exportCSV(selected, 'FedEx-Selected');
-    } catch (e) {
-      showNotification('Could not export CSV. Please try again.', 'error');
-    }
-  });
-
-  // Create T.Corp (opens modal)
-  document.getElementById('create-tcorp-btn').addEventListener('click', () => {
+  // Create Dispute T.Corp (non-FedEx)
+  document.getElementById('create-dispute-tcorp-btn').addEventListener('click', () => {
     const selected = getSelectedRows();
-    if (selected.length === 0) {
-      showNotification('Please select at least one row.', 'error');
-      return;
-    }
+    if (selected.length === 0) { showNotification('Please select at least one row.', 'error'); return; }
+    state._tcorpType = 'dispute';
+    state._tcorpSelectedRows = selected;
     openTCorpModal(selected);
+  });
+
+  // Create SPLAT T.Corp (all carriers)
+  document.getElementById('create-splat-tcorp-btn').addEventListener('click', () => {
+    const selected = getSelectedRows();
+    if (selected.length === 0) { showNotification('Please select at least one row.', 'error'); return; }
+    state._tcorpType = 'splat';
+    state._tcorpSelectedRows = selected;
+    openTCorpModal(selected);
+  });
+
+  // Export Dispute CSV
+  document.getElementById('export-dispute-csv-btn').addEventListener('click', () => {
+    const selected = getSelectedRows();
+    if (selected.length === 0) { showNotification('Please select at least one row.', 'error'); return; }
+    exportDisputeCSV(selected, state.activeTab);
+  });
+
+  // Export SPLAT CSV
+  document.getElementById('export-splat-csv-btn').addEventListener('click', () => {
+    const selected = getSelectedRows();
+    if (selected.length === 0) { showNotification('Please select at least one row.', 'error'); return; }
+    exportSplatCSV(selected);
   });
 
   // T.Corp Modal — Copy All Fields
@@ -1246,9 +1316,7 @@ function wireActionButtons() {
       const text = getTCorpFormText();
       await navigator.clipboard.writeText(text);
       showNotification('T.Corp fields copied to clipboard!', 'success');
-    } catch (e) {
-      showNotification('Could not copy to clipboard. Please try again.', 'error');
-    }
+    } catch (e) { showNotification('Could not copy to clipboard. Please try again.', 'error'); }
   });
 
   // T.Corp Modal — Open T.Corp & Auto-fill
@@ -1261,87 +1329,51 @@ function wireActionButtons() {
         return;
       }
       const description = getTCorpFormText();
+      const direction = document.getElementById('tcorp-return-outbound').value;
       const data = {
+        templateType: state._tcorpType || 'dispute',
         mcid: document.getElementById('tcorp-mcid').value,
         companyId: document.getElementById('tcorp-company-id').value,
-        ticketId: document.getElementById('tcorp-ticket-id').value,
+        ticketId: ticketId,
         sellerName: document.getElementById('tcorp-seller-name').value,
         carrier: document.getElementById('tcorp-carrier').value,
         marketplace: document.getElementById('tcorp-marketplace').value,
-        returnOutbound: document.getElementById('tcorp-return-outbound').value,
+        returnOutbound: direction,
         shipDate: document.getElementById('tcorp-ship-date').value,
         amount: document.getElementById('tcorp-amount').value,
         issueSummary: document.getElementById('tcorp-issue-summary').value,
         sellerAction: document.getElementById('tcorp-seller-action').value,
         sellerSupport: document.getElementById('tcorp-seller-support').value,
-        description: description
+        description: description,
+        emailTitle: state._tcorpType === 'splat' && state.activeTab === 'FedEx'
+          ? 'Veeqo Chargebacks Dispute ' + ticketId : 'N/A',
+        relatedSim: 'N/A'
       };
 
       await chrome.storage.local.set({ tcorpAutofill: data });
 
-      const tcorpUrl = 'https://t.corp.amazon.com/create/templates/21a64813-829d-4d9f-801b-b56e22f41c26';
+      let tcorpUrl;
+      if (state._tcorpType === 'splat') {
+        tcorpUrl = SPLAT_URL;
+      } else if (direction === 'Return') {
+        tcorpUrl = DISPUTE_RETURN_URL;
+      } else {
+        tcorpUrl = DISPUTE_OUTBOUND_URL;
+      }
       window.open(tcorpUrl, '_blank');
 
       showNotification('T.Corp page opened — fields will auto-fill when the page loads.', 'success');
       document.getElementById('tcorp-modal').style.display = 'none';
-    } catch (e) {
-      showNotification('Could not open T.Corp. Please try again.', 'error');
-    }
-  });
-
-  // T.Corp Modal — Export Selected as CSV
-  document.getElementById('tcorp-export-csv-btn').addEventListener('click', () => {
-    try {
-      const selected = getSelectedRows();
-      if (selected.length === 0) {
-        showNotification('No rows selected for export.', 'error');
-        return;
-      }
-      exportCSV(selected, 'TCorp-Selected');
-    } catch (e) {
-      showNotification('Could not export CSV. Please try again.', 'error');
-    }
+    } catch (e) { showNotification('Could not open T.Corp. Please try again.', 'error'); }
   });
 
   // T.Corp Modal — Close
   document.getElementById('tcorp-close-btn').addEventListener('click', () => {
     document.getElementById('tcorp-modal').style.display = 'none';
   });
-
-  // Close modal on overlay click
   document.getElementById('tcorp-modal').addEventListener('click', (e) => {
     if (e.target === document.getElementById('tcorp-modal')) {
       document.getElementById('tcorp-modal').style.display = 'none';
-    }
-  });
-
-  // Copy SPLAT T.Corp Fields
-  document.getElementById('copy-splat-btn').addEventListener('click', async () => {
-    try {
-      const selected = getSelectedRows();
-      if (selected.length === 0) {
-        showNotification('Please select at least one row.', 'error');
-        return;
-      }
-      const text = generateSplatTCorpFields(selected);
-      await navigator.clipboard.writeText(text);
-      showNotification('Copied to clipboard!', 'success');
-    } catch (e) {
-      showNotification('Could not copy to clipboard. Please try again.', 'error');
-    }
-  });
-
-  // Export Tab as CSV
-  document.getElementById('export-csv-btn').addEventListener('click', () => {
-    try {
-      const filtered = filterByTab(state.mergedRows, state.activeTab);
-      if (filtered.length === 0) {
-        showNotification('No rows to export.', 'error');
-        return;
-      }
-      exportCSV(filtered, state.activeTab);
-    } catch (e) {
-      showNotification('Could not export CSV. Please try again.', 'error');
     }
   });
 
@@ -1349,30 +1381,20 @@ function wireActionButtons() {
   document.getElementById('copy-datanet-sql-btn').addEventListener('click', async () => {
     try {
       if (!state.taskEngineRows || state.taskEngineRows.length === 0) {
-        showNotification('Upload a Task Engine export first.', 'error');
-        return;
+        showNotification('Upload a Task Engine export first.', 'error'); return;
       }
-      const trackingNumbers = state.taskEngineRows
-        .map(r => r.trackingNumber)
-        .filter(tn => tn && tn.trim() !== '');
-      if (trackingNumbers.length === 0) {
-        showNotification('No tracking numbers found in the Task Engine export.', 'error');
-        return;
-      }
+      const trackingNumbers = state.taskEngineRows.map(r => r.trackingNumber).filter(tn => tn && tn.trim() !== '');
+      if (trackingNumbers.length === 0) { showNotification('No tracking numbers found.', 'error'); return; }
       const sql = generateDatanetSQL(trackingNumbers);
       await navigator.clipboard.writeText(sql);
-
-      // Open saved Datanet profile URL or show generic link
       const savedUrl = (document.getElementById('datanet-profile-url').value || '').trim();
       if (savedUrl) {
         window.open(savedUrl, '_blank');
-        showNotification('SQL copied (' + trackingNumbers.length + ' tracking numbers) — Datanet profile opened. Paste the SQL and run.', 'success');
+        showNotification('SQL copied (' + trackingNumbers.length + ' tracking numbers) — Datanet profile opened.', 'success');
       } else {
-        showNotification('SQL copied (' + trackingNumbers.length + ' tracking numbers). Save your Datanet profile URL in the header to open it automatically next time.', 'success');
+        showNotification('SQL copied (' + trackingNumbers.length + ' tracking numbers). Save your Datanet profile URL to open it automatically.', 'success');
       }
-    } catch (e) {
-      showNotification('Could not copy SQL to clipboard. Please try again.', 'error');
-    }
+    } catch (e) { showNotification('Could not copy SQL to clipboard.', 'error'); }
   });
 }
 
