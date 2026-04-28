@@ -408,3 +408,263 @@ body {
 #tcorp-open-btn:hover { background: #0052cc; border-color: #0052cc; }
 
 .modal-close-btn { color: #888 !important; }
+
+/* === Dispute Strength Badges === */
+.badge-strong {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 600;
+  background: #d4edda;
+  color: #155724;
+  border: 2px solid transparent;
+  transition: border-color 0.15s, background 0.15s;
+}
+.badge-strong.badge-active {
+  border-color: #155724;
+  background: #b7dfbf;
+}
+.badge-moderate {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 600;
+  background: #fff3cd;
+  color: #856404;
+  border: 2px solid transparent;
+  transition: border-color 0.15s, background 0.15s;
+}
+.badge-moderate.badge-active {
+  border-color: #856404;
+  background: #ffe8a1;
+}
+.badge-weak {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 600;
+  background: #f8d7da;
+  color: #721c24;
+  border: 2px solid transparent;
+  transition: border-color 0.15s, background 0.15s;
+}
+.badge-weak.badge-active {
+  border-color: #721c24;
+  background: #f1b0b7;
+}
+
+/* === Surcharge Flag Colours === */
+.flag-carrier-only {
+  color: #dc3545;
+  font-weight: 600;
+}
+.flag-shared {
+  color: #6c757d;
+}
+
+/* === Insight Tooltip === */
+.insight-wrapper {
+  position: relative;
+  display: inline-block;
+}
+.insight-icon {
+  cursor: pointer;
+  font-size: 16px;
+  color: #007bff;
+  user-select: none;
+}
+.insight-icon:focus {
+  outline: 2px solid #007bff;
+  border-radius: 2px;
+}
+.insight-tooltip {
+  display: none;
+  position: absolute;
+  z-index: 100;
+  left: 24px;
+  top: -4px;
+  min-width: 320px;
+  max-width: 420px;
+  background: #fff;
+  border: 1px solid #dee2e6;
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  padding: 10px 14px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #333;
+}
+.insight-tooltip ol {
+  margin: 0;
+  padding-left: 18px;
+}
+.insight-tooltip li {
+  margin-bottom: 6px;
+}
+.insight-tooltip li:last-child {
+  margin-bottom: 0;
+}
+
+/* === Dispute Strength Summary Bar === */
+.dispute-strength-summary {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  padding: 8px 14px;
+  margin-bottom: 8px;
+  background: #fff;
+  border: 1px solid #dee2e6;
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+/* === Dispute Strength Popup Card === */
+.dispute-strength-cell {
+  position: relative;
+  overflow: visible;
+}
+.dispute-popup {
+  position: fixed;
+  z-index: 200;
+  width: 450px;
+  max-width: 450px;
+  background: #fff;
+  border: 1px solid #dee2e6;
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.18);
+  padding: 16px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #333;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  word-break: break-word;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+.dispute-popup-header {
+  margin-bottom: 10px;
+}
+.dispute-popup-header .badge-strong,
+.dispute-popup-header .badge-moderate,
+.dispute-popup-header .badge-weak {
+  font-size: 13px;
+  padding: 3px 12px;
+  letter-spacing: 0.5px;
+}
+.dispute-popup-insights {
+  margin: 0 0 10px 0;
+  padding-left: 18px;
+  list-style: disc;
+}
+.dispute-popup-insights li {
+  margin-bottom: 6px;
+}
+.dispute-popup-insights li:last-child {
+  margin-bottom: 0;
+}
+.dispute-popup-stats {
+  border-top: 1px solid #eee;
+  padding-top: 8px;
+  margin-top: 4px;
+}
+.dispute-popup-stat {
+  font-size: 11px;
+  color: #555;
+  margin-bottom: 2px;
+  font-weight: 600;
+  word-break: break-word;
+}
+
+/* === Column Toggle === */
+.column-toggle-bar {
+  margin-bottom: 8px;
+}
+.btn-toggle-columns {
+  padding: 5px 14px;
+  font-size: 12px;
+  border: 1px solid #adb5bd;
+  border-radius: 4px;
+  background: #fff;
+  color: #495057;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.btn-toggle-columns:hover {
+  background: #e9ecef;
+}
+
+/* === Badge Hover Indicator === */
+.badge-hoverable {
+  cursor: pointer;
+  border-bottom: 1px dotted currentColor;
+}
+
+/* === Dispute Popup Sections === */
+.dispute-popup-why {
+  font-weight: 600;
+  font-size: 11px;
+  color: #555;
+  margin-bottom: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+.dispute-popup-dims {
+  background: #f8f9fa;
+  border-radius: 4px;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+  font-size: 11px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  line-height: 1.6;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+.dispute-popup-analysis {
+  margin: 0 0 10px 0;
+  padding-left: 18px;
+  list-style: disc;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+}
+.dispute-popup-analysis li {
+  margin-bottom: 5px;
+  word-break: break-word;
+}
+.dispute-popup-analysis li:last-child {
+  margin-bottom: 0;
+}
+.dispute-popup-recommendation {
+  margin-top: 6px;
+  font-style: italic;
+  color: #444;
+}
+
+/* === Dispute Hover Hint === */
+.dispute-hover-hint {
+  font-size: 10px;
+  font-weight: 400;
+  color: #888;
+  font-style: italic;
+  margin-top: 2px;
+}
+
+/* === Export Insights Button === */
+.btn-export-insights {
+  margin-left: auto;
+  padding: 4px 12px;
+  font-size: 12px;
+  border: 1px solid #adb5bd;
+  border-radius: 4px;
+  background: #fff;
+  color: #495057;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.btn-export-insights:hover {
+  background: #e9ecef;
+}

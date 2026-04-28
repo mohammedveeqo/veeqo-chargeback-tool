@@ -18,6 +18,83 @@ const state = {
 
 let saveAgentNameTimer = null;
 
+/* ===== Surcharge Threshold Constants ===== */
+const SURCHARGE_THRESHOLDS = {
+  FEDEX: {
+    AHS_WEIGHT: { billableWeight: 50 },
+    AHS_DIMENSION: { longestSide: 48, secondLongest: 30 },
+    AHS_CUBIC: { cubicVolume: 10368 },
+    OVERSIZE: { longestSide: 96, lengthPlusGirth: 130, cubicVolume: 17280 },
+    OVER_MAX: { actualWeight: 150, longestSide: 108, lengthPlusGirth: 165 },
+    ONE_RATE: { cubicVolume: 2200, actualWeight: 50 }
+  },
+  UPS: {
+    AHS_WEIGHT: { billableWeight: 50 },
+    AHS_DIMENSION: { longestSide: 48, secondLongest: 30 },
+    AHS_CUBIC: { cubicVolume: 10368 },
+    LARGE_PACKAGE: { longestSide: 96, lengthPlusGirth: 130, cubicVolume: 17280, actualWeight: 110 },
+    OVER_MAX: { actualWeight: 150, longestSide: 108, lengthPlusGirth: 165 }
+  },
+  USPS: {
+    NON_STANDARD_SMALL: { longestSideMin: 22, longestSideMax: 30 },
+    NON_STANDARD_LARGE: { longestSide: 30 },
+    VOLUME_SURCHARGE: { cubicVolume: 3456 },
+    BALLOON_PRICING: { lengthPlusGirthMin: 84, lengthPlusGirthMax: 108, actualWeightMax: 20 },
+    OVER_MAX: { actualWeight: 70, lengthPlusGirth: 130 }
+  },
+  DHL: {
+    AHS_WEIGHT: { billableWeight: 50 },
+    AHS_DIMENSION: { longestSide: 48 }
+  }
+};
+
+function getDimDivisor(carrier) {
+  const c = (carrier || '').toUpperCase();
+  if (c === 'USPS') return 166;
+  return 139; // UPS, FEDEX, DHL, and default
+}
+
+function computeSurchargeFlags(carrier, dims, weight, billableWeight, cubicVolume, lengthPlusGirth, serviceName) {
+  // Early return if dims is not a valid array of 3 numbers
+  if (!Array.isArray(dims) || dims.length !== 3 || dims.some(d => d === 'N/A' || typeof d !== 'number')) {
+    return [];
+  }
+  if (weight === 'N/A' || billableWeight === 'N/A' || cubicVolume === 'N/A' || lengthPlusGirth === 'N/A') {
+    return [];
+  }
+
+  const flags = [];
+  const c = (carrier || '').toUpperCase();
+
+  if (c === 'FEDEX') {
+    if (billableWeight > 50) flags.push('AHS-Weight');
+    if (dims[0] > 48 || dims[1] > 30) flags.push('AHS-Dimension');
+    if (cubicVolume > 10368) flags.push('AHS-Cubic');
+    if (dims[0] > 96 || lengthPlusGirth > 130 || cubicVolume > 17280) flags.push('Oversize');
+    if (weight > 150 || dims[0] > 108 || lengthPlusGirth > 165) flags.push('Over Max');
+    if ((serviceName || '').indexOf('One Rate') !== -1 && (cubicVolume > 2200 || weight > 50)) {
+      flags.push('One Rate Exceeded');
+    }
+  } else if (c === 'UPS') {
+    if (billableWeight > 50) flags.push('AHS-Weight');
+    if (dims[0] > 48 || dims[1] > 30) flags.push('AHS-Dimension');
+    if (cubicVolume > 10368) flags.push('AHS-Cubic');
+    if (dims[0] > 96 || lengthPlusGirth > 130 || cubicVolume > 17280 || weight > 110) flags.push('Large Package');
+    if (weight > 150 || dims[0] > 108 || lengthPlusGirth > 165) flags.push('Over Max');
+  } else if (c === 'USPS') {
+    if (dims[0] > 22 && dims[0] <= 30) flags.push('Non-Standard (small)');
+    if (dims[0] > 30) flags.push('Non-Standard (large)');
+    if (cubicVolume > 3456) flags.push('Volume Surcharge');
+    if (lengthPlusGirth > 84 && lengthPlusGirth < 108 && weight < 20) flags.push('Balloon Pricing');
+    if (weight > 70 || lengthPlusGirth > 130) flags.push('Over Max');
+  } else if (c === 'DHL') {
+    if (billableWeight > 50) flags.push('AHS-Weight');
+    if (dims[0] > 48) flags.push('AHS-Dimension');
+  }
+
+  return flags;
+}
+
 /* ===== Agent Name Persistence (Task 3) ===== */
 
 function isChromeAvailable() {
@@ -673,6 +750,49 @@ function mergeData(taskRows, datanetRows) {
 /* ===== Calculation Engine (Task 8.1) ===== */
 
 function calculateFields(row) {
+  // --- Seller Dimensional Weight ---
+  if (row.sellerLength === 'N/A' || row.sellerWidth === 'N/A' || row.sellerHeight === 'N/A') {
+    row.sellerDimWeight = 'N/A';
+  } else {
+    row.sellerDimWeight = Math.round((row.sellerLength * row.sellerWidth * row.sellerHeight) / getDimDivisor(row.carrier) * 100) / 100;
+  }
+
+  // --- Carrier Dimensional Weight ---
+  if (row.carrierAuditedLength === 'N/A' || row.carrierAuditedWidth === 'N/A' || row.carrierAuditedHeight === 'N/A') {
+    row.carrierDimWeight = 'N/A';
+  } else {
+    row.carrierDimWeight = Math.round((row.carrierAuditedLength * row.carrierAuditedWidth * row.carrierAuditedHeight) / getDimDivisor(row.carrier) * 100) / 100;
+  }
+
+  // --- Seller Billable Weight ---
+  if (row.sellerWeight === 'N/A' || row.sellerDimWeight === 'N/A') {
+    row.sellerBillableWeight = 'N/A';
+  } else {
+    row.sellerBillableWeight = Math.max(row.sellerWeight, row.sellerDimWeight);
+  }
+
+  // --- Carrier Billable Weight ---
+  if (row.carrierAuditedWeight === 'N/A' || row.carrierDimWeight === 'N/A') {
+    row.carrierBillableWeight = 'N/A';
+  } else {
+    row.carrierBillableWeight = Math.max(row.carrierAuditedWeight, row.carrierDimWeight);
+  }
+
+  // --- Cubic Volume (carrier dims) ---
+  if (row.carrierAuditedLength === 'N/A' || row.carrierAuditedWidth === 'N/A' || row.carrierAuditedHeight === 'N/A') {
+    row.cubicVolume = 'N/A';
+  } else {
+    row.cubicVolume = row.carrierAuditedLength * row.carrierAuditedWidth * row.carrierAuditedHeight;
+  }
+
+  // --- Length Plus Girth (carrier dims, sorted descending) ---
+  if (row.carrierAuditedLength === 'N/A' || row.carrierAuditedWidth === 'N/A' || row.carrierAuditedHeight === 'N/A') {
+    row.lengthPlusGirth = 'N/A';
+  } else {
+    var sortedDims = [row.carrierAuditedLength, row.carrierAuditedWidth, row.carrierAuditedHeight].sort(function(a, b) { return b - a; });
+    row.lengthPlusGirth = sortedDims[0] + 2 * sortedDims[1] + 2 * sortedDims[2];
+  }
+
   // Chargeback Amount
   if (row.carrierAuditedTotal === 'N/A' || row.sellerBaseRate === 'N/A') {
     row.chargebackAmount = 'N/A';
@@ -680,13 +800,11 @@ function calculateFields(row) {
     row.chargebackAmount = Math.round((row.carrierAuditedTotal - row.sellerBaseRate) * 100) / 100;
   }
 
-  // Weight Match
-  if (row.carrierAuditedWeight === 'N/A') {
-    row.weightMatch = 'N/A';
-  } else if (row.sellerWeight === 'N/A') {
+  // Weight Match (uses billable weights with 0.5 lb tolerance)
+  if (row.sellerBillableWeight === 'N/A' || row.carrierBillableWeight === 'N/A') {
     row.weightMatch = 'N/A';
   } else {
-    row.weightMatch = Math.abs(row.sellerWeight - row.carrierAuditedWeight) <= 0.5 ? 'Yes' : 'No';
+    row.weightMatch = Math.abs(row.sellerBillableWeight - row.carrierBillableWeight) <= 0.5 ? 'Yes' : 'No';
   }
 
   // Dims Match
@@ -708,6 +826,156 @@ function calculateFields(row) {
     row.status = 'Mismatch';
   } else {
     row.status = 'Incomplete';
+  }
+
+  // --- Surcharge Flags (carrier vs seller comparison) ---
+  var carrierDimsSorted = (row.carrierAuditedLength !== 'N/A' && row.carrierAuditedWidth !== 'N/A' && row.carrierAuditedHeight !== 'N/A')
+    ? [row.carrierAuditedLength, row.carrierAuditedWidth, row.carrierAuditedHeight].sort(function(a, b) { return b - a; })
+    : null;
+  var sellerDimsSorted = (row.sellerLength !== 'N/A' && row.sellerWidth !== 'N/A' && row.sellerHeight !== 'N/A')
+    ? [row.sellerLength, row.sellerWidth, row.sellerHeight].sort(function(a, b) { return b - a; })
+    : null;
+
+  // Compute seller-side metrics for surcharge comparison
+  var sellerCubicVolume = sellerDimsSorted ? sellerDimsSorted[0] * sellerDimsSorted[1] * sellerDimsSorted[2] : 'N/A';
+  var sellerLengthPlusGirth = sellerDimsSorted ? sellerDimsSorted[0] + 2 * sellerDimsSorted[1] + 2 * sellerDimsSorted[2] : 'N/A';
+
+  var carrierFlags = computeSurchargeFlags(row.carrier, carrierDimsSorted, row.carrierAuditedWeight, row.carrierBillableWeight, row.cubicVolume, row.lengthPlusGirth, row.serviceName || '');
+  var sellerFlags = computeSurchargeFlags(row.carrier, sellerDimsSorted, row.sellerWeight, row.sellerBillableWeight, sellerCubicVolume, sellerLengthPlusGirth, row.serviceName || '');
+
+  row.surchargeFlags = carrierFlags.map(function(flagName) {
+    return { name: flagName, carrierOnly: sellerFlags.indexOf(flagName) === -1 };
+  });
+
+  // --- Dispute Insights ---
+  row.disputeInsights = [];
+
+  // Helper: check if any surcharge flag differs between seller and carrier
+  var hasCarrierOnlyFlag = row.surchargeFlags.some(function(f) { return f.carrierOnly; });
+  var hasSharedFlag = row.surchargeFlags.some(function(f) { return !f.carrierOnly; });
+
+  // Helper: dimension differences
+  var dimDiffs = null;
+  if (sellerDimsSorted && carrierDimsSorted) {
+    dimDiffs = [
+      Math.abs(row.sellerLength - row.carrierAuditedLength),
+      Math.abs(row.sellerWidth - row.carrierAuditedWidth),
+      Math.abs(row.sellerHeight - row.carrierAuditedHeight)
+    ];
+  }
+  var allDimsWithin2 = dimDiffs ? dimDiffs.every(function(d) { return d <= 2; }) : false;
+
+  // Rule 19: Match + no surcharge flag differences
+  if (row.status === 'Match' && !hasCarrierOnlyFlag) {
+    row.disputeInsights.push('Seller and carrier data match. The chargeback may be due to rate differences rather than dimension errors. Check the charge breakdown for details.');
+  }
+
+  // Rule 20: Mismatch + small dim difference (all within 2 inches)
+  if (row.status === 'Mismatch' && allDimsWithin2) {
+    row.disputeInsights.push('Small dimension difference detected. Carriers round up to the nearest inch. If the seller\'s package was close to a threshold, the carrier\'s measurement may be correct. Photo evidence showing exact measurements will strengthen this dispute.');
+  }
+
+  // Rule 21: Mismatch + significant dim weight difference (> 10 lbs)
+  if (row.status === 'Mismatch' && row.sellerDimWeight !== 'N/A' && row.carrierDimWeight !== 'N/A') {
+    var dimWeightDiff = Math.abs(row.sellerDimWeight - row.carrierDimWeight);
+    if (dimWeightDiff > 10) {
+      row.disputeInsights.push('The dimensional weight difference is ' + Math.round(dimWeightDiff * 10) / 10 + ' lbs. Even a small change in dimensions can cause a large billable weight change. The carrier will likely defend their audit. Strong photo evidence is essential.');
+    }
+  }
+
+  // Rule 22: Carrier-only surcharge flag
+  row.surchargeFlags.forEach(function(f) {
+    if (f.carrierOnly) {
+      row.disputeInsights.push('The carrier\'s measurements pushed this package into ' + f.name + ' territory, which the seller\'s dimensions would not have triggered. This is a strong basis for dispute if the seller can prove their measurements are correct.');
+    }
+  });
+
+  // Rule 23: Both-triggered surcharge flag
+  row.surchargeFlags.forEach(function(f) {
+    if (!f.carrierOnly) {
+      row.disputeInsights.push('Both the seller\'s and carrier\'s measurements trigger ' + f.name + '. Even if the dispute is approved, this surcharge would still apply. The dispute may only recover the rate difference, not the surcharge.');
+    }
+  });
+
+  // Rule 24: Small chargeback amount (under $1)
+  if (row.chargebackAmount !== 'N/A' && row.chargebackAmount < 1) {
+    row.disputeInsights.push('The chargeback amount is under $1. Consider whether it is worth disputing \u2014 carrier teams may deprioritise small amounts.');
+  }
+
+  // Rule 25: Over Max flag triggered
+  if (row.surchargeFlags.some(function(f) { return f.name === 'Over Max'; })) {
+    row.disputeInsights.push('This package exceeds carrier maximum limits. Over Max packages are typically rejected or charged at premium rates. Disputes on Over Max charges are rarely successful unless the carrier\'s measurements are clearly wrong.');
+  }
+
+  // Rule 26: One Rate Exceeded (FedEx)
+  if (row.surchargeFlags.some(function(f) { return f.name === 'One Rate Exceeded'; })) {
+    row.disputeInsights.push('This package exceeded FedEx One Rate limits and was re-rated at standard commercial rates. If the seller entered dimensions within One Rate limits but the carrier audited higher, check for the known Veeqo bug (T.Corp D378661796) where Veeqo shows One Rate for ineligible packages.');
+  }
+
+  // --- Dispute Strength (priority-ordered: Weak → Moderate → Strong → default Moderate) ---
+  var allDimsWithin1 = dimDiffs ? dimDiffs.every(function(d) { return d <= 1; }) : false;
+  var billableWeightDiff = (row.sellerBillableWeight !== 'N/A' && row.carrierBillableWeight !== 'N/A')
+    ? Math.abs(row.sellerBillableWeight - row.carrierBillableWeight) : 0;
+  var anyDimOver2 = dimDiffs ? dimDiffs.some(function(d) { return d > 2; }) : false;
+  var sellerHasNoFlags = sellerFlags.length === 0;
+  var chargebackNum = (row.chargebackAmount !== 'N/A') ? row.chargebackAmount : null;
+
+  // Check if seller and carrier trigger the same flags (no carrier-only flags)
+  var sameFlagsTriggered = row.surchargeFlags.length > 0 && !hasCarrierOnlyFlag;
+
+  row.disputeStrength = 'Moderate'; // default
+
+  // WEAK conditions (check first, first match wins)
+  if (row.status === 'Match' && !hasCarrierOnlyFlag) {
+    row.disputeStrength = 'Weak';
+  } else if (row.surchargeFlags.some(function(f) { return f.name === 'Over Max'; })) {
+    row.disputeStrength = 'Weak';
+  } else if (chargebackNum !== null && chargebackNum <= 0) {
+    row.disputeStrength = 'Weak';
+  } else if (sameFlagsTriggered && allDimsWithin1) {
+    row.disputeStrength = 'Weak';
+  }
+  // MODERATE conditions (check second)
+  else if (allDimsWithin2 && billableWeightDiff > 5) {
+    row.disputeStrength = 'Moderate';
+  } else if (hasCarrierOnlyFlag && sellerDimsSorted && carrierDimsSorted) {
+    // Check if seller dims are within 10% of threshold — simplified: if carrier-only flag exists but dims are close
+    var sellerCloseToThreshold = false;
+    row.surchargeFlags.forEach(function(f) {
+      if (!f.carrierOnly) return;
+      var thresholds = SURCHARGE_THRESHOLDS[(row.carrier || '').toUpperCase()];
+      if (!thresholds) return;
+      // Check each threshold for the flag
+      var flagKey = f.name.replace(/[^a-zA-Z]/g, '_').toUpperCase();
+      Object.keys(thresholds).forEach(function(tk) {
+        var t = thresholds[tk];
+        if (t.longestSide && sellerDimsSorted[0] >= t.longestSide * 0.9) sellerCloseToThreshold = true;
+        if (t.secondLongest && sellerDimsSorted[1] >= t.secondLongest * 0.9) sellerCloseToThreshold = true;
+        if (t.cubicVolume && sellerCubicVolume !== 'N/A' && sellerCubicVolume >= t.cubicVolume * 0.9) sellerCloseToThreshold = true;
+        if (t.lengthPlusGirth && sellerLengthPlusGirth !== 'N/A' && sellerLengthPlusGirth >= t.lengthPlusGirth * 0.9) sellerCloseToThreshold = true;
+      });
+    });
+    if (sellerCloseToThreshold) {
+      row.disputeStrength = 'Moderate';
+    }
+    // If not close to threshold, fall through to Strong checks
+    else if (anyDimOver2) {
+      row.disputeStrength = 'Strong';
+    } else {
+      row.disputeStrength = 'Moderate';
+    }
+  } else if (chargebackNum !== null && chargebackNum < 5) {
+    row.disputeStrength = 'Moderate';
+  } else if (row.surchargeFlags.some(function(f) { return f.name === 'One Rate Exceeded'; })) {
+    row.disputeStrength = 'Moderate';
+  }
+  // STRONG conditions (check third)
+  else if (anyDimOver2 && hasCarrierOnlyFlag) {
+    row.disputeStrength = 'Strong';
+  } else if (billableWeightDiff > 10 && sellerHasNoFlags) {
+    row.disputeStrength = 'Strong';
+  } else if (chargebackNum !== null && chargebackNum > 5 && row.status === 'Mismatch' && !hasSharedFlag) {
+    row.disputeStrength = 'Strong';
   }
 
   return row;
@@ -746,38 +1014,324 @@ function updateTabCounts(rows) {
 /* ===== Table Renderer (Task 10.3) ===== */
 
 const COLUMNS = [
-  { key: 'trackingNumber', label: 'Tracking Number', monetary: false },
-  { key: 'shipmentId', label: 'Shipment ID', monetary: false },
-  { key: 'carrier', label: 'Carrier', monetary: false },
-  { key: 'serviceName', label: 'Service Name', monetary: false },
-  { key: 'sellerWeight', label: 'Seller Weight', monetary: false },
-  { key: 'sellerLength', label: 'Seller Length', monetary: false },
-  { key: 'sellerWidth', label: 'Seller Width', monetary: false },
-  { key: 'sellerHeight', label: 'Seller Height', monetary: false },
-  { key: 'sellerBaseRate', label: 'Seller Base Rate ($)', monetary: true },
-  { key: 'carrierAuditedWeight', label: 'Carrier Audited Weight', monetary: false },
-  { key: 'carrierAuditedLength', label: 'Carrier Audited Length', monetary: false },
-  { key: 'carrierAuditedWidth', label: 'Carrier Audited Width', monetary: false },
-  { key: 'carrierAuditedHeight', label: 'Carrier Audited Height', monetary: false },
-  { key: 'carrierAuditedTotal', label: 'Carrier Audited Total ($)', monetary: true },
-  { key: 'carrierAuditedBaseCharge', label: 'Carrier Audited Base Charge ($)', monetary: true },
-  { key: 'deliveryAreaSurcharge', label: 'Delivery Area Surcharge ($)', monetary: true },
-  { key: 'fuelSurcharge', label: 'Fuel Surcharge ($)', monetary: true },
-  { key: 'oversizeSurcharge', label: 'Oversize Surcharge ($)', monetary: true },
-  { key: 'specialHandlingSurcharge', label: 'Special Handling Surcharge ($)', monetary: true },
-  { key: 'overmaxSurcharge', label: 'Overmax Surcharge ($)', monetary: true },
-  { key: 'otherCharges', label: 'Other Charges ($)', monetary: true },
-  { key: 'invoiceDate', label: 'Invoice Date', monetary: false },
-  { key: 'chargeBreakdown', label: 'Charge Breakdown', monetary: false },
-  { key: 'chargebackAmount', label: 'Chargeback Amount ($)', monetary: true },
-  { key: 'weightMatch', label: 'Weight Match', monetary: false },
-  { key: 'dimsMatch', label: 'Dims Match', monetary: false },
-  { key: 'status', label: 'Status', monetary: false }
+  // Default visible columns
+  { key: 'trackingNumber', label: 'Tracking Number', monetary: false, defaultVisible: true },
+  { key: 'carrier', label: 'Carrier', monetary: false, defaultVisible: true },
+  { key: 'serviceName', label: 'Service Name', monetary: false, defaultVisible: true },
+  { key: 'sellerDimsCombined', label: 'Seller Dims (in)', monetary: false, defaultVisible: true, computed: true },
+  { key: 'sellerBillableWeight', label: 'Seller Billable Weight (lbs)', monetary: false, defaultVisible: true },
+  { key: 'carrierDimsCombined', label: 'Carrier Dims (in)', monetary: false, defaultVisible: true, computed: true },
+  { key: 'carrierBillableWeight', label: 'Carrier Billable Weight (lbs)', monetary: false, defaultVisible: true },
+  { key: 'chargebackAmount', label: 'Chargeback Amount ($)', monetary: true, defaultVisible: true },
+  { key: 'status', label: 'Status', monetary: false, defaultVisible: true },
+  { key: 'surchargeFlags', label: 'Surcharge Flags', monetary: false, defaultVisible: true },
+  // Hidden by default columns
+  { key: 'shipmentId', label: 'Shipment ID', monetary: false, defaultVisible: false },
+  { key: 'sellerWeight', label: 'Seller Weight', monetary: false, defaultVisible: false },
+  { key: 'sellerLength', label: 'Seller Length', monetary: false, defaultVisible: false },
+  { key: 'sellerWidth', label: 'Seller Width', monetary: false, defaultVisible: false },
+  { key: 'sellerHeight', label: 'Seller Height', monetary: false, defaultVisible: false },
+  { key: 'sellerDimWeight', label: 'Seller Dim Weight (lbs)', monetary: false, defaultVisible: false },
+  { key: 'sellerBaseRate', label: 'Seller Base Rate ($)', monetary: true, defaultVisible: false },
+  { key: 'carrierAuditedWeight', label: 'Carrier Audited Weight', monetary: false, defaultVisible: false },
+  { key: 'carrierAuditedLength', label: 'Carrier Audited Length', monetary: false, defaultVisible: false },
+  { key: 'carrierAuditedWidth', label: 'Carrier Audited Width', monetary: false, defaultVisible: false },
+  { key: 'carrierAuditedHeight', label: 'Carrier Audited Height', monetary: false, defaultVisible: false },
+  { key: 'carrierDimWeight', label: 'Carrier Dim Weight (lbs)', monetary: false, defaultVisible: false },
+  { key: 'carrierAuditedTotal', label: 'Carrier Audited Total ($)', monetary: true, defaultVisible: false },
+  { key: 'carrierAuditedBaseCharge', label: 'Carrier Audited Base Charge ($)', monetary: true, defaultVisible: false },
+  { key: 'deliveryAreaSurcharge', label: 'Delivery Area Surcharge ($)', monetary: true, defaultVisible: false },
+  { key: 'fuelSurcharge', label: 'Fuel Surcharge ($)', monetary: true, defaultVisible: false },
+  { key: 'oversizeSurcharge', label: 'Oversize Surcharge ($)', monetary: true, defaultVisible: false },
+  { key: 'specialHandlingSurcharge', label: 'Special Handling Surcharge ($)', monetary: true, defaultVisible: false },
+  { key: 'overmaxSurcharge', label: 'Overmax Surcharge ($)', monetary: true, defaultVisible: false },
+  { key: 'otherCharges', label: 'Other Charges ($)', monetary: true, defaultVisible: false },
+  { key: 'cubicVolume', label: 'Cubic Volume (in³)', monetary: false, defaultVisible: false },
+  { key: 'lengthPlusGirth', label: 'Length + Girth (in)', monetary: false, defaultVisible: false },
+  { key: 'invoiceDate', label: 'Invoice Date', monetary: false, defaultVisible: false },
+  { key: 'chargeBreakdown', label: 'Charge Breakdown', monetary: false, defaultVisible: false },
+  { key: 'weightMatch', label: 'Weight Match', monetary: false, defaultVisible: false },
+  { key: 'dimsMatch', label: 'Dims Match', monetary: false, defaultVisible: false }
 ];
+
+// Column visibility state
+var showAllColumns = false;
+
+function getVisibleColumns() {
+  if (showAllColumns) return COLUMNS;
+  return COLUMNS.filter(function(col) { return col.defaultVisible; });
+}
+
+function formatDimsCombined(l, w, h) {
+  if (l === 'N/A' || w === 'N/A' || h === 'N/A') return 'N/A';
+  return l + ' x ' + w + ' x ' + h;
+}
+
+function getComputedValue(row, key) {
+  if (key === 'sellerDimsCombined') return formatDimsCombined(row.sellerLength, row.sellerWidth, row.sellerHeight);
+  if (key === 'carrierDimsCombined') return formatDimsCombined(row.carrierAuditedLength, row.carrierAuditedWidth, row.carrierAuditedHeight);
+  return row[key];
+}
+
+function buildDisputePopup(row) {
+  var popup = document.createElement('div');
+  popup.className = 'dispute-popup';
+
+  var strength = row.disputeStrength || 'Moderate';
+
+  // Header badge
+  var header = document.createElement('div');
+  header.className = 'dispute-popup-header';
+  var headerBadge = document.createElement('span');
+  headerBadge.textContent = strength.toUpperCase() + ' DISPUTE';
+  if (strength === 'Strong') headerBadge.className = 'badge-strong';
+  else if (strength === 'Weak') headerBadge.className = 'badge-weak';
+  else headerBadge.className = 'badge-moderate';
+  header.appendChild(headerBadge);
+  popup.appendChild(header);
+
+  // "Why this is [strength]" subheader
+  var whyLabel = document.createElement('div');
+  whyLabel.className = 'dispute-popup-why';
+  whyLabel.textContent = 'Why this is ' + strength.toLowerCase() + ':';
+  popup.appendChild(whyLabel);
+
+  // Dims comparison block
+  var sellerDims = formatDimsCombined(row.sellerLength, row.sellerWidth, row.sellerHeight);
+  var carrierDims = formatDimsCombined(row.carrierAuditedLength, row.carrierAuditedWidth, row.carrierAuditedHeight);
+  var sDimW = (row.sellerDimWeight !== 'N/A' && row.sellerDimWeight !== undefined) ? row.sellerDimWeight : 'N/A';
+  var cDimW = (row.carrierDimWeight !== 'N/A' && row.carrierDimWeight !== undefined) ? row.carrierDimWeight : 'N/A';
+  var sBillW = (row.sellerBillableWeight !== 'N/A' && row.sellerBillableWeight !== undefined) ? row.sellerBillableWeight : 'N/A';
+  var cBillW = (row.carrierBillableWeight !== 'N/A' && row.carrierBillableWeight !== undefined) ? row.carrierBillableWeight : 'N/A';
+
+  var dimsBlock = document.createElement('div');
+  dimsBlock.className = 'dispute-popup-dims';
+  dimsBlock.innerHTML =
+    '<div>Seller: ' + sellerDims + ' in (dim weight: ' + sDimW + ' lbs, billable: ' + sBillW + ' lbs)</div>' +
+    '<div>Carrier: ' + carrierDims + ' in (dim weight: ' + cDimW + ' lbs, billable: ' + cBillW + ' lbs)</div>';
+  popup.appendChild(dimsBlock);
+
+  // Dimension difference analysis
+  var analysisLines = [];
+  if (row.sellerLength !== 'N/A' && row.carrierAuditedLength !== 'N/A' &&
+      row.sellerWidth !== 'N/A' && row.carrierAuditedWidth !== 'N/A' &&
+      row.sellerHeight !== 'N/A' && row.carrierAuditedHeight !== 'N/A') {
+    var diffs = [
+      { name: 'length', seller: row.sellerLength, carrier: row.carrierAuditedLength },
+      { name: 'width', seller: row.sellerWidth, carrier: row.carrierAuditedWidth },
+      { name: 'height', seller: row.sellerHeight, carrier: row.carrierAuditedHeight }
+    ];
+    var diffParts = diffs.filter(function(d) { return d.seller !== d.carrier; });
+    if (diffParts.length === 0) {
+      analysisLines.push('All dimensions match exactly.');
+    } else {
+      diffParts.forEach(function(d) {
+        var diff = Math.abs(d.seller - d.carrier);
+        var rounded = Math.round(diff * 10) / 10;
+        analysisLines.push('The ' + d.name + ' differs by ' + rounded + ' inches (seller: ' + d.seller + ', carrier: ' + d.carrier + ').');
+      });
+      var allWithin1 = diffParts.every(function(d) { return Math.abs(d.seller - d.carrier) <= 1; });
+      if (allWithin1) {
+        analysisLines.push('Carriers round up to the nearest inch, so this is likely a valid carrier measurement.');
+      }
+    }
+  }
+
+  // Billable weight impact
+  if (sBillW !== 'N/A' && cBillW !== 'N/A') {
+    var bwDiff = Math.round(Math.abs(sBillW - cBillW) * 10) / 10;
+    if (bwDiff > 0) {
+      analysisLines.push('The billable weight ' + (cBillW > sBillW ? 'increased' : 'decreased') + ' by ' + bwDiff + ' lbs due to the dimension change.');
+    }
+  }
+
+  // Surcharge flag explanations with actual values
+  if (Array.isArray(row.surchargeFlags) && row.surchargeFlags.length > 0) {
+    var sellerSorted = (row.sellerLength !== 'N/A' && row.sellerWidth !== 'N/A' && row.sellerHeight !== 'N/A')
+      ? [row.sellerLength, row.sellerWidth, row.sellerHeight].sort(function(a, b) { return b - a; }) : null;
+    var carrierSorted = (row.carrierAuditedLength !== 'N/A' && row.carrierAuditedWidth !== 'N/A' && row.carrierAuditedHeight !== 'N/A')
+      ? [row.carrierAuditedLength, row.carrierAuditedWidth, row.carrierAuditedHeight].sort(function(a, b) { return b - a; }) : null;
+
+    row.surchargeFlags.forEach(function(f) {
+      if (f.carrierOnly) {
+        analysisLines.push('The carrier\'s measurements triggered ' + f.name + ' which the seller\'s dimensions would not have. This is a strong basis for dispute with photo evidence.');
+      } else {
+        var detail = '';
+        if (f.name === 'AHS-Dimension' && sellerSorted && carrierSorted) {
+          detail = ' (longest side: seller ' + sellerSorted[0] + ' in, carrier ' + carrierSorted[0] + ' in; second longest: seller ' + sellerSorted[1] + ' in, carrier ' + carrierSorted[1] + ' in)';
+        } else if (f.name === 'AHS-Weight') {
+          detail = ' (seller billable: ' + sBillW + ' lbs, carrier billable: ' + cBillW + ' lbs)';
+        } else if (f.name === 'Over Max' && carrierSorted) {
+          detail = ' (carrier longest side: ' + carrierSorted[0] + ' in, weight: ' + row.carrierAuditedWeight + ' lbs)';
+        }
+        analysisLines.push('Both seller and carrier trigger ' + f.name + detail + '. This surcharge applies regardless of dispute outcome.');
+      }
+    });
+  }
+
+  // Build analysis section
+  if (analysisLines.length > 0) {
+    var analysisList = document.createElement('ul');
+    analysisList.className = 'dispute-popup-analysis';
+    analysisLines.forEach(function(line) {
+      var li = document.createElement('li');
+      li.textContent = line;
+      analysisList.appendChild(li);
+    });
+    popup.appendChild(analysisList);
+  }
+
+  // Stats footer
+  var stats = document.createElement('div');
+  stats.className = 'dispute-popup-stats';
+  var cbAmt = row.chargebackAmount !== 'N/A' ? '$' + Number(row.chargebackAmount).toFixed(2) : 'N/A';
+  stats.appendChild(createStatLine('Chargeback: ' + cbAmt));
+
+  if (Array.isArray(row.surchargeFlags) && row.surchargeFlags.length > 0) {
+    var hasShared = row.surchargeFlags.some(function(f) { return !f.carrierOnly; });
+    var hasCarrierOnly = row.surchargeFlags.some(function(f) { return f.carrierOnly; });
+    if (hasShared && !hasCarrierOnly) {
+      stats.appendChild(createStatLine('What the seller can recover: the rate difference only, not the surcharge.'));
+    } else if (hasCarrierOnly) {
+      stats.appendChild(createStatLine('The carrier-only surcharges are disputable with evidence.'));
+    }
+  }
+
+  // Recommendation
+  var rec = document.createElement('div');
+  rec.className = 'dispute-popup-recommendation';
+  if (strength === 'Strong') {
+    rec.textContent = 'Recommendation: Strong dispute candidate. Request photo evidence from the seller and proceed.';
+  } else if (strength === 'Weak') {
+    if (row.chargebackAmount !== 'N/A' && row.chargebackAmount <= 0) {
+      rec.textContent = 'Recommendation: No overcharge detected. No action needed.';
+    } else {
+      rec.textContent = 'Recommendation: Dispute is unlikely to succeed unless the seller has photo evidence proving their measurements are correct.';
+    }
+  } else {
+    rec.textContent = 'Recommendation: Could go either way. Request photo evidence before deciding whether to dispute.';
+  }
+  stats.appendChild(rec);
+
+  popup.appendChild(stats);
+  return popup;
+}
+
+function createStatLine(text) {
+  var div = document.createElement('div');
+  div.className = 'dispute-popup-stat';
+  div.textContent = text;
+  return div;
+}
 
 function formatMonetary(val) {
   if (val === 'N/A') return 'N/A';
   return '$' + Number(val).toFixed(2);
+}
+
+function renderDisputeStrengthSummary(rows) {
+  var existing = document.getElementById('dispute-strength-summary');
+  if (existing) existing.remove();
+
+  if (!rows || rows.length === 0) return;
+
+  var strong = 0, moderate = 0, weak = 0;
+  rows.forEach(function(r) {
+    if (r.disputeStrength === 'Strong') strong++;
+    else if (r.disputeStrength === 'Weak') weak++;
+    else moderate++;
+  });
+
+  var bar = document.createElement('div');
+  bar.id = 'dispute-strength-summary';
+  bar.className = 'dispute-strength-summary';
+  bar.innerHTML =
+    '<span class="badge-strong">' + strong + ' Strong</span> ' +
+    '<span class="badge-moderate">' + moderate + ' Moderate</span> ' +
+    '<span class="badge-weak">' + weak + ' Weak</span>';
+
+  var exportBtn = document.createElement('button');
+  exportBtn.className = 'btn-export-insights';
+  exportBtn.textContent = 'Export Insights';
+  exportBtn.addEventListener('click', function() { exportInsightsCSV(rows); });
+  bar.appendChild(exportBtn);
+
+  var tableContainer = document.getElementById('table-container');
+  tableContainer.parentNode.insertBefore(bar, tableContainer);
+}
+
+function buildInsightText(row) {
+  var lines = [];
+  var strength = row.disputeStrength || 'Moderate';
+  lines.push(strength.toUpperCase() + ' DISPUTE');
+
+  // Dims comparison
+  var sellerDims = formatDimsCombined(row.sellerLength, row.sellerWidth, row.sellerHeight);
+  var carrierDims = formatDimsCombined(row.carrierAuditedLength, row.carrierAuditedWidth, row.carrierAuditedHeight);
+  var sDimW = (row.sellerDimWeight !== 'N/A' && row.sellerDimWeight !== undefined) ? row.sellerDimWeight : 'N/A';
+  var cDimW = (row.carrierDimWeight !== 'N/A' && row.carrierDimWeight !== undefined) ? row.carrierDimWeight : 'N/A';
+  var sBillW = (row.sellerBillableWeight !== 'N/A' && row.sellerBillableWeight !== undefined) ? row.sellerBillableWeight : 'N/A';
+  var cBillW = (row.carrierBillableWeight !== 'N/A' && row.carrierBillableWeight !== undefined) ? row.carrierBillableWeight : 'N/A';
+
+  lines.push('Seller: ' + sellerDims + ' in (dim: ' + sDimW + ' lbs, billable: ' + sBillW + ' lbs)');
+  lines.push('Carrier: ' + carrierDims + ' in (dim: ' + cDimW + ' lbs, billable: ' + cBillW + ' lbs)');
+
+  // Dim diffs
+  if (row.sellerLength !== 'N/A' && row.carrierAuditedLength !== 'N/A') {
+    var diffs = [
+      { name: 'length', s: row.sellerLength, c: row.carrierAuditedLength },
+      { name: 'width', s: row.sellerWidth, c: row.carrierAuditedWidth },
+      { name: 'height', s: row.sellerHeight, c: row.carrierAuditedHeight }
+    ].filter(function(d) { return d.s !== 'N/A' && d.c !== 'N/A' && d.s !== d.c; });
+    diffs.forEach(function(d) {
+      lines.push('The ' + d.name + ' differs by ' + (Math.round(Math.abs(d.s - d.c) * 10) / 10) + ' in (seller: ' + d.s + ', carrier: ' + d.c + ')');
+    });
+  }
+
+  if (sBillW !== 'N/A' && cBillW !== 'N/A') {
+    var bwDiff = Math.round(Math.abs(sBillW - cBillW) * 10) / 10;
+    if (bwDiff > 0) lines.push('Billable weight diff: ' + bwDiff + ' lbs');
+  }
+
+  if (Array.isArray(row.surchargeFlags) && row.surchargeFlags.length > 0) {
+    row.surchargeFlags.forEach(function(f) {
+      if (f.carrierOnly) {
+        lines.push('Carrier-only surcharge: ' + f.name);
+      } else {
+        lines.push('Shared surcharge: ' + f.name + ' (applies regardless)');
+      }
+    });
+  }
+
+  var cbAmt = row.chargebackAmount !== 'N/A' ? '$' + Number(row.chargebackAmount).toFixed(2) : 'N/A';
+  lines.push('Chargeback: ' + cbAmt);
+
+  if (strength === 'Strong') {
+    lines.push('Recommendation: Strong dispute candidate. Request photo evidence and proceed.');
+  } else if (strength === 'Weak') {
+    lines.push('Recommendation: Dispute unlikely to succeed without strong evidence.');
+  } else {
+    lines.push('Recommendation: Could go either way. Request photo evidence before deciding.');
+  }
+
+  return lines.join('\n');
+}
+
+function exportInsightsCSV(rows) {
+  var headers = ['Tracking Number', 'Dispute Strength', 'Chargeback Amount', 'Insight'];
+  var csvRows = [headers.join(',')];
+  rows.forEach(function(r) {
+    var cbAmt = r.chargebackAmount !== 'N/A' ? Number(r.chargebackAmount).toFixed(2) : 'N/A';
+    var insight = buildInsightText(r);
+    var vals = [
+      r.trackingNumber,
+      r.disputeStrength || 'Moderate',
+      cbAmt,
+      '"' + insight.replace(/"/g, '""') + '"'
+    ];
+    csvRows.push(vals.join(','));
+  });
+  downloadCSV(csvRows.join('\n'), 'veeqo-dispute-insights');
 }
 
 function renderTable(rows) {
@@ -786,6 +1340,30 @@ function renderTable(rows) {
   const tbody = table.querySelector('tbody');
   thead.innerHTML = '';
   tbody.innerHTML = '';
+
+  // Dispute strength summary counts above the table
+  renderDisputeStrengthSummary(rows);
+
+  // Column toggle button
+  var toggleBar = document.getElementById('column-toggle-bar');
+  if (!toggleBar) {
+    toggleBar = document.createElement('div');
+    toggleBar.id = 'column-toggle-bar';
+    toggleBar.className = 'column-toggle-bar';
+    var tableContainer = document.getElementById('table-container');
+    tableContainer.parentNode.insertBefore(toggleBar, tableContainer);
+  }
+  toggleBar.innerHTML = '';
+  var toggleBtn = document.createElement('button');
+  toggleBtn.className = 'btn-toggle-columns';
+  toggleBtn.textContent = showAllColumns ? 'Hide extra columns' : 'Show all columns';
+  toggleBtn.addEventListener('click', function() {
+    showAllColumns = !showAllColumns;
+    renderTable(rows);
+  });
+  toggleBar.appendChild(toggleBtn);
+
+  var visibleCols = getVisibleColumns();
 
   // Header row
   const headerRow = document.createElement('tr');
@@ -797,7 +1375,32 @@ function renderTable(rows) {
   selectAllTh.appendChild(selectAllCb);
   headerRow.appendChild(selectAllTh);
 
-  COLUMNS.forEach((col) => {
+  // Dispute Strength header (second column, after checkbox)
+  const strengthTh = document.createElement('th');
+  strengthTh.textContent = 'Dispute Strength';
+  strengthTh.style.cursor = 'pointer';
+  // Hint text on first load
+  if (!window._disputeHoverHintShown) {
+    var hint = document.createElement('div');
+    hint.className = 'dispute-hover-hint';
+    hint.id = 'dispute-hover-hint';
+    hint.textContent = 'Hover over badges for details';
+    strengthTh.appendChild(hint);
+  }
+  strengthTh.addEventListener('click', function() {
+    var order = strengthTh._sortAsc ? -1 : 1;
+    strengthTh._sortAsc = !strengthTh._sortAsc;
+    var priority = { 'Strong': 0, 'Moderate': 1, 'Weak': 2 };
+    rows.sort(function(a, b) {
+      var pa = priority[a.disputeStrength] !== undefined ? priority[a.disputeStrength] : 1;
+      var pb = priority[b.disputeStrength] !== undefined ? priority[b.disputeStrength] : 1;
+      return (pa - pb) * order;
+    });
+    renderTable(rows);
+  });
+  headerRow.appendChild(strengthTh);
+
+  visibleCols.forEach(function(col) {
     const th = document.createElement('th');
     th.textContent = col.label;
     headerRow.appendChild(th);
@@ -805,8 +1408,9 @@ function renderTable(rows) {
   thead.appendChild(headerRow);
 
   // Data rows
-  rows.forEach((row, idx) => {
+  rows.forEach(function(row, idx) {
     const tr = document.createElement('tr');
+
     // Checkbox cell
     const cbTd = document.createElement('td');
     const cb = document.createElement('input');
@@ -814,7 +1418,7 @@ function renderTable(rows) {
     cb.setAttribute('aria-label', 'Select row ' + (idx + 1));
     cb.dataset.rowIndex = idx;
     if (state.selectedRowIndices.has(idx)) cb.checked = true;
-    cb.addEventListener('change', () => {
+    cb.addEventListener('change', function() {
       if (cb.checked) {
         state.selectedRowIndices.add(idx);
       } else {
@@ -825,14 +1429,97 @@ function renderTable(rows) {
     cbTd.appendChild(cb);
     tr.appendChild(cbTd);
 
-    COLUMNS.forEach((col) => {
+    // Dispute Strength badge cell with hover popup
+    const strengthTd = document.createElement('td');
+    strengthTd.className = 'dispute-strength-cell';
+    const badge = document.createElement('span');
+    const strength = row.disputeStrength || 'Moderate';
+    badge.textContent = strength;
+    if (strength === 'Strong') badge.className = 'badge-strong badge-hoverable';
+    else if (strength === 'Weak') badge.className = 'badge-weak badge-hoverable';
+    else badge.className = 'badge-moderate badge-hoverable';
+
+    var hoverTimeout = null;
+    var currentPopup = null;
+
+    strengthTd.addEventListener('mouseenter', function() {
+      clearTimeout(hoverTimeout);
+      // Remove hint on first hover
+      if (!window._disputeHoverHintShown) {
+        window._disputeHoverHintShown = true;
+        var hintEl = document.getElementById('dispute-hover-hint');
+        if (hintEl) hintEl.remove();
+      }
+      // Close any other open popups
+      document.querySelectorAll('.dispute-popup').forEach(function(p) { p.remove(); });
+      document.querySelectorAll('.badge-active').forEach(function(b) { b.classList.remove('badge-active'); });
+      currentPopup = buildDisputePopup(row);
+      document.body.appendChild(currentPopup);
+      // Position next to the badge using viewport coords
+      var rect = badge.getBoundingClientRect();
+      currentPopup.style.left = (rect.right + 8) + 'px';
+      currentPopup.style.display = 'block';
+      var popupRect = currentPopup.getBoundingClientRect();
+      // If popup goes off-screen right, flip to left side
+      if (popupRect.right > window.innerWidth - 10) {
+        currentPopup.style.left = (rect.left - popupRect.width - 8) + 'px';
+      }
+      // If popup would overflow bottom of viewport, anchor to bottom instead of top
+      var popupHeight = popupRect.height;
+      if (rect.top + popupHeight > window.innerHeight - 10) {
+        currentPopup.style.top = Math.max(10, window.innerHeight - popupHeight - 10) + 'px';
+      } else {
+        currentPopup.style.top = rect.top + 'px';
+      }
+      badge.classList.add('badge-active');
+      // Keep popup alive when hovering over it
+      currentPopup.addEventListener('mouseenter', function() { clearTimeout(hoverTimeout); });
+      currentPopup.addEventListener('mouseleave', function() {
+        hoverTimeout = setTimeout(function() {
+          if (currentPopup) { currentPopup.remove(); currentPopup = null; }
+          badge.classList.remove('badge-active');
+        }, 300);
+      });
+    });
+
+    strengthTd.addEventListener('mouseleave', function(e) {
+      hoverTimeout = setTimeout(function() {
+        if (currentPopup) { currentPopup.remove(); currentPopup = null; }
+        badge.classList.remove('badge-active');
+      }, 300);
+    });
+
+    strengthTd.appendChild(badge);
+    tr.appendChild(strengthTd);
+
+    // Data columns
+    visibleCols.forEach(function(col) {
       const td = document.createElement('td');
-      const val = row[col.key];
-      if (col.monetary) {
+      const val = col.computed ? getComputedValue(row, col.key) : row[col.key];
+
+      // Special rendering for surchargeFlags
+      if (col.key === 'surchargeFlags') {
+        if (Array.isArray(val) && val.length > 0) {
+          val.forEach(function(flag, fi) {
+            if (fi > 0) td.appendChild(document.createTextNode(', '));
+            var span = document.createElement('span');
+            if (flag.carrierOnly) {
+              span.className = 'flag-carrier-only';
+              span.textContent = flag.name + ' (carrier only)';
+            } else {
+              span.className = 'flag-shared';
+              span.textContent = flag.name;
+            }
+            td.appendChild(span);
+          });
+        }
+      }
+      else if (col.monetary) {
         td.textContent = formatMonetary(val);
       } else {
-        td.textContent = val;
+        td.textContent = (val !== undefined && val !== null) ? val : '';
       }
+
       // Status color coding
       if (col.key === 'status') {
         if (val === 'Match') td.classList.add('status-match');
@@ -845,9 +1532,9 @@ function renderTable(rows) {
   });
 
   // Select All handler
-  selectAllCb.addEventListener('change', () => {
+  selectAllCb.addEventListener('change', function() {
     const checkboxes = tbody.querySelectorAll('input[type="checkbox"]');
-    checkboxes.forEach((cb) => {
+    checkboxes.forEach(function(cb) {
       const i = parseInt(cb.dataset.rowIndex, 10);
       cb.checked = selectAllCb.checked;
       if (selectAllCb.checked) {
@@ -933,8 +1620,12 @@ function generateFedExEmail(rows, agentName) {
     text += 'Linked Account?: \n\n';
 
     text += 'Dimensions:\n';
-    text += 'Seller: ' + row.sellerLength + ' x ' + row.sellerWidth + ' x ' + row.sellerHeight + ' in, ' + row.sellerWeight + ' lbs\n';
-    text += 'Carrier Audit: ' + row.carrierAuditedLength + ' x ' + row.carrierAuditedWidth + ' x ' + row.carrierAuditedHeight + ' in, ' + row.carrierAuditedWeight + ' lbs\n\n';
+    var sDimW = (row.sellerDimWeight !== undefined && row.sellerDimWeight !== 'N/A') ? row.sellerDimWeight : 'N/A';
+    var sBillW = (row.sellerBillableWeight !== undefined && row.sellerBillableWeight !== 'N/A') ? row.sellerBillableWeight : 'N/A';
+    text += 'Seller: ' + row.sellerLength + ' x ' + row.sellerWidth + ' x ' + row.sellerHeight + ' in, ' + row.sellerWeight + ' lbs (dim weight: ' + sDimW + ' lbs, billable: ' + sBillW + ' lbs)\n';
+    var cDimW = (row.carrierDimWeight !== undefined && row.carrierDimWeight !== 'N/A') ? row.carrierDimWeight : 'N/A';
+    var cBillW = (row.carrierBillableWeight !== undefined && row.carrierBillableWeight !== 'N/A') ? row.carrierBillableWeight : 'N/A';
+    text += 'Carrier Audit: ' + row.carrierAuditedLength + ' x ' + row.carrierAuditedWidth + ' x ' + row.carrierAuditedHeight + ' in, ' + row.carrierAuditedWeight + ' lbs (dim weight: ' + cDimW + ' lbs, billable: ' + cBillW + ' lbs)\n\n';
 
     text += 'Chargeback/adjustment amount: $' + (row.chargebackAmount === 'N/A' ? 'N/A' : Number(row.chargebackAmount).toFixed(2)) + '\n\n';
     text += '---\n\n';
@@ -970,7 +1661,11 @@ function generateTCorpFields(rows) {
 
   rows.forEach((row) => {
     const amt = row.chargebackAmount === 'N/A' ? 'N/A' : '$' + Number(row.chargebackAmount).toFixed(2);
-    text += row.trackingNumber + ' | Seller: ' + row.sellerLength + 'x' + row.sellerWidth + 'x' + row.sellerHeight + ' ' + row.sellerWeight + 'lbs | Carrier: ' + row.carrierAuditedLength + 'x' + row.carrierAuditedWidth + 'x' + row.carrierAuditedHeight + ' ' + row.carrierAuditedWeight + 'lbs | Chargeback: ' + amt + '\n';
+    var sDimW = (row.sellerDimWeight !== undefined && row.sellerDimWeight !== 'N/A') ? row.sellerDimWeight : 'N/A';
+    var sBillW = (row.sellerBillableWeight !== undefined && row.sellerBillableWeight !== 'N/A') ? row.sellerBillableWeight : 'N/A';
+    var cDimW = (row.carrierDimWeight !== undefined && row.carrierDimWeight !== 'N/A') ? row.carrierDimWeight : 'N/A';
+    var cBillW = (row.carrierBillableWeight !== undefined && row.carrierBillableWeight !== 'N/A') ? row.carrierBillableWeight : 'N/A';
+    text += row.trackingNumber + ' | Seller: ' + row.sellerLength + 'x' + row.sellerWidth + 'x' + row.sellerHeight + ' ' + row.sellerWeight + 'lbs (dim: ' + sDimW + 'lbs, billable: ' + sBillW + 'lbs) | Carrier: ' + row.carrierAuditedLength + 'x' + row.carrierAuditedWidth + 'x' + row.carrierAuditedHeight + ' ' + row.carrierAuditedWeight + 'lbs (dim: ' + cDimW + 'lbs, billable: ' + cBillW + 'lbs) | Chargeback: ' + amt + '\n';
   });
 
   return text;
@@ -1165,8 +1860,8 @@ function formatDateMMDDYYYY(dateStr) {
 function exportDisputeCSV(rows, tabName) {
   const headers = [
     'Tracking ID', 'Order ID', 'Ship Method',
-    'Seller_Dimensions (IN)', 'Seller_Weight (LB)',
-    'Carrier Audit_Dimensions (IN)', 'Carrier Audit_Weight (LB)',
+    'Seller_Dimensions (IN)', 'Seller_Weight (LB)', 'Seller Billable Weight (lbs)',
+    'Carrier Audit_Dimensions (IN)', 'Carrier Audit_Weight (LB)', 'Carrier Billable Weight (lbs)',
     'Carrier Dim_On_Tracking Site (IN)', 'Carrier Weight_On_Tracking Site (LB)',
     'Seller Dispute Amount', 'Invoice Date'
   ];
@@ -1178,7 +1873,9 @@ function exportDisputeCSV(rows, tabName) {
     const vals = [
       r.trackingNumber, r.orderId || '', r.serviceName || '',
       sellerDims, r.sellerWeight !== 'N/A' ? r.sellerWeight : 'N/A',
+      r.sellerBillableWeight !== undefined && r.sellerBillableWeight !== 'N/A' ? r.sellerBillableWeight : 'N/A',
       carrierDims, r.carrierAuditedWeight !== 'N/A' ? r.carrierAuditedWeight : 'N/A',
+      r.carrierBillableWeight !== undefined && r.carrierBillableWeight !== 'N/A' ? r.carrierBillableWeight : 'N/A',
       'N/A', 'N/A',
       amt, formatDateMMDDYYYY(r.invoiceDate)
     ];
