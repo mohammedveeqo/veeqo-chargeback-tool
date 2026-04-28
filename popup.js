@@ -13,6 +13,12 @@ const state = {
     companyName: '',
     mcid: '',
     marketplaceId: ''
+  },
+  filters: {
+    disputeStrength: 'All',
+    status: 'All',
+    chargebackAmount: 'All',
+    surchargeFlags: 'All'
   }
 };
 
@@ -543,14 +549,26 @@ function performMerge() {
     const merged = mergeData(state.taskEngineRows, state.datanetRows);
     merged.forEach(calculateFields);
     state.mergedRows = merged;
-    state.activeTab = 'All';
 
-    const filtered = filterByTab(merged, 'All');
+    // Find the carrier tab with the highest row count
+    var carrierTabs = ['FEDEX', 'UPS', 'USPS', 'DHL', 'ONTRAC'];
+    var bestTab = 'All';
+    var bestCount = 0;
+    carrierTabs.forEach(function(c) {
+      var count = merged.filter(function(r) { return r.carrier === c; }).length;
+      if (count > bestCount) {
+        bestCount = count;
+        bestTab = c === 'FEDEX' ? 'FedEx' : c === 'ONTRAC' ? 'OnTrac' : c;
+      }
+    });
+    state.activeTab = bestTab;
+
+    const filtered = filterByTab(merged, bestTab);
     state.selectedRowIndices = new Set(filtered.map((_, i) => i));
 
     const tabs = document.querySelectorAll('#tab-bar .tab');
     tabs.forEach(t => t.classList.remove('active'));
-    tabs.forEach(t => { if (t.dataset.tab === 'All') t.classList.add('active'); });
+    tabs.forEach(t => { if (t.dataset.tab === bestTab) t.classList.add('active'); });
 
     updateTabCounts(state.mergedRows);
     renderTable(filtered);
@@ -1010,6 +1028,95 @@ function updateTabCounts(rows) {
   });
 }
 
+function applyDropdownFilters(rows) {
+  var f = state.filters;
+  return rows.filter(function(r) {
+    if (f.disputeStrength !== 'All' && r.disputeStrength !== f.disputeStrength) return false;
+    if (f.status !== 'All' && r.status !== f.status) return false;
+    if (f.chargebackAmount !== 'All') {
+      var amt = r.chargebackAmount;
+      if (amt === 'N/A') return false;
+      if (f.chargebackAmount === 'Over $50' && amt <= 50) return false;
+      if (f.chargebackAmount === 'Over $100' && amt <= 100) return false;
+      if (f.chargebackAmount === 'Over $500' && amt <= 500) return false;
+      if (f.chargebackAmount === 'Under $1' && amt >= 1) return false;
+    }
+    if (f.surchargeFlags !== 'All') {
+      var hasFlags = Array.isArray(r.surchargeFlags) && r.surchargeFlags.length > 0;
+      if (f.surchargeFlags === 'Has flags' && !hasFlags) return false;
+      if (f.surchargeFlags === 'No flags' && hasFlags) return false;
+    }
+    return true;
+  });
+}
+
+function getFilteredRows() {
+  var tabFiltered = filterByTab(state.mergedRows, state.activeTab);
+  return applyDropdownFilters(tabFiltered);
+}
+
+function refreshTableWithFilters() {
+  var filtered = getFilteredRows();
+  state.selectedRowIndices = new Set(filtered.map(function(_, i) { return i; }));
+  renderTable(filtered);
+}
+
+function renderFilterBar() {
+  var existing = document.getElementById('filter-bar');
+  if (existing) existing.remove();
+
+  var bar = document.createElement('div');
+  bar.id = 'filter-bar';
+  bar.className = 'filter-bar';
+
+  function makeFilter(label, stateKey, options) {
+    var wrapper = document.createElement('div');
+    wrapper.className = 'filter-group';
+    var lbl = document.createElement('label');
+    lbl.className = 'filter-label';
+    lbl.textContent = label;
+    var sel = document.createElement('select');
+    sel.className = 'filter-select';
+    options.forEach(function(opt) {
+      var o = document.createElement('option');
+      o.value = opt;
+      o.textContent = opt;
+      if (state.filters[stateKey] === opt) o.selected = true;
+      sel.appendChild(o);
+    });
+    sel.addEventListener('change', function() {
+      state.filters[stateKey] = sel.value;
+      refreshTableWithFilters();
+    });
+    wrapper.appendChild(lbl);
+    wrapper.appendChild(sel);
+    return wrapper;
+  }
+
+  bar.appendChild(makeFilter('Strength:', 'disputeStrength', ['All', 'Strong', 'Moderate', 'Weak']));
+  bar.appendChild(makeFilter('Status:', 'status', ['All', 'Match', 'Mismatch', 'Incomplete']));
+  bar.appendChild(makeFilter('Chargeback:', 'chargebackAmount', ['All', 'Over $50', 'Over $100', 'Over $500', 'Under $1']));
+  bar.appendChild(makeFilter('Flags:', 'surchargeFlags', ['All', 'Has flags', 'No flags']));
+
+  var clearLink = document.createElement('a');
+  clearLink.href = '#';
+  clearLink.className = 'filter-clear';
+  clearLink.textContent = 'Clear filters';
+  clearLink.addEventListener('click', function(e) {
+    e.preventDefault();
+    state.filters.disputeStrength = 'All';
+    state.filters.status = 'All';
+    state.filters.chargebackAmount = 'All';
+    state.filters.surchargeFlags = 'All';
+    renderFilterBar();
+    refreshTableWithFilters();
+  });
+  bar.appendChild(clearLink);
+
+  var tableContainer = document.getElementById('table-container');
+  tableContainer.parentNode.insertBefore(bar, tableContainer);
+}
+
 
 /* ===== Table Renderer (Task 10.3) ===== */
 
@@ -1343,6 +1450,9 @@ function renderTable(rows) {
 
   // Dispute strength summary counts above the table
   renderDisputeStrengthSummary(rows);
+
+  // Filter bar
+  renderFilterBar();
 
   // Column toggle button
   var toggleBar = document.getElementById('column-toggle-bar');
@@ -2104,10 +2214,7 @@ function wireTabHandlers() {
       tabs.forEach(t => t.classList.remove('active'));
       tabBtn.classList.add('active');
       state.activeTab = tabBtn.dataset.tab;
-      const filtered = filterByTab(state.mergedRows, state.activeTab);
-      // Select all rows by default on tab switch
-      state.selectedRowIndices = new Set(filtered.map((_, i) => i));
-      renderTable(filtered);
+      refreshTableWithFilters();
     });
   });
 }
