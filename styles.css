@@ -168,12 +168,15 @@ body {
   display: flex;
   gap: 8px;
 }
-.turing-input-row input {
+.turing-input-row textarea {
   flex: 1;
   padding: 8px 12px;
   border: 1px solid #ddd;
   border-radius: 6px;
   font-size: 13px;
+  font-family: inherit;
+  resize: vertical;
+  min-height: 34px;
 }
 .turing-input-row button {
   padding: 8px 18px;

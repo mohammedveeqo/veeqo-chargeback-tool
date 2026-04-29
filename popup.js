@@ -1127,6 +1127,7 @@ function renderFilterBar() {
 const COLUMNS = [
   // Default visible columns
   { key: 'trackingNumber', label: 'Tracking Number', monetary: false, defaultVisible: true },
+  { key: 'orderId', label: 'Order ID', monetary: false, defaultVisible: true },
   { key: 'carrier', label: 'Carrier', monetary: false, defaultVisible: true },
   { key: 'serviceName', label: 'Service Name', monetary: false, defaultVisible: true },
   { key: 'sellerDimsCombined', label: 'Seller Dims (in)', monetary: false, defaultVisible: true, computed: true },
@@ -2350,7 +2351,7 @@ function mapTuringToDatanetRow(data) {
     chargeBreakdown: chargeBreakdown,
     // Extra fields from Turing
     _carrier: sc.CarrierId || '',
-    _orderId: sc.OrderId || '',
+    _orderId: sc.OrderId || 'Off-Amazon',
     _serviceId: sc.ShippingServiceId || ''
   };
 }
@@ -2360,65 +2361,85 @@ async function turingQuickLookup() {
   const statusEl = document.getElementById('turing-status');
   const errorEl = document.getElementById('turing-error');
   const btn = document.getElementById('turing-add-btn');
-  const tn = (input.value || '').trim();
+  const raw = (input.value || '').trim();
 
   errorEl.textContent = '';
   statusEl.textContent = '';
 
-  if (!tn) { errorEl.textContent = 'Enter a tracking number.'; return; }
+  if (!raw) { errorEl.textContent = 'Enter a tracking number.'; return; }
 
-  // Check if already in table
-  if (state.mergedRows.some(r => r.trackingNumber === tn) ||
-      (state.datanetRows && state.datanetRows.some(r => r.trackingNumber === tn))) {
-    errorEl.textContent = 'Tracking number already in the table.';
-    return;
-  }
+  // Split by commas, newlines, tabs, or whitespace — filter empty
+  const trackingNumbers = raw.split(/[\s,]+/).map(s => s.trim()).filter(Boolean);
+  if (trackingNumbers.length === 0) { errorEl.textContent = 'No valid tracking numbers found.'; return; }
 
   btn.disabled = true;
   btn.textContent = '...';
-  statusEl.textContent = 'Looking up ' + tn;
 
-  try {
-    const data = await turingFetch(tn);
-    if (!data.shippingContainer) throw new Error('No shipment found for this tracking number.');
+  let added = 0;
+  let skipped = 0;
+  let failed = 0;
 
-    const dnRow = mapTuringToDatanetRow(data);
+  for (let i = 0; i < trackingNumbers.length; i++) {
+    const tn = trackingNumbers[i];
+    statusEl.textContent = 'Looking up ' + (i + 1) + '/' + trackingNumbers.length + ': ' + tn;
 
-    // Initialize datanetRows if needed
-    if (!state.datanetRows) state.datanetRows = [];
-    state.datanetRows.push(dnRow);
-
-    // If we have task engine rows, try merge; otherwise build a standalone table
-    if (state.taskEngineRows) {
-      tryAutoMerge();
-    } else {
-      // No task engine data — show Turing data directly in the table
-      const row = {
-        ...dnRow,
-        carrier: dnRow._carrier,
-        orderId: dnRow._orderId,
-        serviceName: dnRow._serviceId,
-        orderNumber: dnRow._orderId
-      };
-      calculateFields(row);
-      state.mergedRows.push(row);
-      renderTable(filterByTab(state.mergedRows, state.activeTab));
-      updateTabCounts(state.mergedRows);
-      document.getElementById('action-buttons').style.display = '';
-      document.getElementById('row-count').textContent = state.mergedRows.length + ' rows';
+    // Skip duplicates
+    if (state.mergedRows.some(r => r.trackingNumber === tn) ||
+        (state.datanetRows && state.datanetRows.some(r => r.trackingNumber === tn))) {
+      skipped++;
+      continue;
     }
 
-    statusEl.textContent = 'Added ' + tn + ' (' + dnRow._carrier + ')';
-    input.value = '';
-    input.focus();
+    try {
+      const data = await turingFetch(tn);
+      if (!data.shippingContainer) { failed++; continue; }
 
-  } catch (err) {
-    errorEl.textContent = err.message;
-    statusEl.textContent = '';
-  } finally {
-    btn.disabled = false;
-    btn.textContent = 'Add';
+      const dnRow = mapTuringToDatanetRow(data);
+      if (!state.datanetRows) state.datanetRows = [];
+      state.datanetRows.push(dnRow);
+
+      if (!state.taskEngineRows) {
+        const row = {
+          ...dnRow,
+          carrier: dnRow._carrier,
+          orderId: dnRow._orderId,
+          serviceName: dnRow._serviceId,
+          orderNumber: dnRow._orderId
+        };
+        calculateFields(row);
+        state.mergedRows.push(row);
+      }
+
+      added++;
+    } catch (err) {
+      if (err.message.includes('Midway') || err.message.includes('Unauthenticated') || err.message.includes('401')) {
+        errorEl.innerHTML = 'Midway session expired. <a href="https://midway-auth.amazon.com/login?next=https://na.turing.sfs.amazon.dev" target="_blank" style="color:#0066ff;">Log in to Midway</a>, then try again.';
+        break;
+      }
+      failed++;
+    }
   }
+
+  // Refresh table
+  if (state.taskEngineRows && added > 0) {
+    tryAutoMerge();
+  } else if (added > 0) {
+    renderTable(filterByTab(state.mergedRows, state.activeTab));
+    updateTabCounts(state.mergedRows);
+    document.getElementById('action-buttons').style.display = '';
+    document.getElementById('row-count').textContent = state.mergedRows.length + ' rows';
+  }
+
+  const parts = [];
+  if (added) parts.push(added + ' added');
+  if (skipped) parts.push(skipped + ' skipped (duplicate)');
+  if (failed) parts.push(failed + ' not found');
+  statusEl.textContent = parts.join(', ');
+
+  input.value = '';
+  input.focus();
+  btn.disabled = false;
+  btn.textContent = 'Add';
 }
 
 /* ===== Datanet API Integration ===== */
@@ -2477,13 +2498,14 @@ async function runDatanetJob(jobId) {
   return runs[0].id;
 }
 
-async function pollJobRun(runId, statusEl) {
+async function pollJobRun(runId, statusEl, jobRunUrl) {
   const maxAttempts = 60; // 10 minutes max
+  const link = jobRunUrl ? ' <a href="' + jobRunUrl + '" target="_blank" style="color:#0066ff;">View job</a>' : '';
   for (let i = 0; i < maxAttempts; i++) {
     const data = await datanetFetch('/jobRun/-/' + runId);
     const jr = data.jobRun || data;
     const status = jr.status;
-    if (statusEl) statusEl.textContent = 'Status: ' + status + ' (' + (i * 10) + 's)';
+    if (statusEl) statusEl.innerHTML = status + ' (' + (i * 10) + 's)' + link;
     if (status === 'SUCCESS') return jr;
     if (status === 'ERROR' || status === 'KILLED' || status === 'CANCELLED') {
       throw new Error('Job failed with status: ' + status);
@@ -2555,7 +2577,8 @@ async function fetchDatanetData() {
     try {
       await datanetFetch('/whoAmI');
     } catch (authErr) {
-      throw new Error('Midway session expired. Open midway-auth.amazon.com in your browser and log in, then try again.');
+      errorEl.innerHTML = 'Midway session expired. <a href="https://midway-auth.amazon.com/login?next=https://datanet-service.amazon.com" target="_blank" style="color:#0066ff;">Log in to Midway</a>, then try again.';
+      return;
     }
 
     // 1. Get profile and its job IDs
@@ -2581,9 +2604,10 @@ async function fetchDatanetData() {
     statusEl.textContent = 'Running job ' + jobId + '...';
     const runId = await runDatanetJob(jobId);
 
-    // 4. Poll for completion
-    statusEl.textContent = 'Waiting for results...';
-    await pollJobRun(runId, statusEl);
+    // 4. Poll for completion — show link to job run page
+    const jobRunUrl = 'https://datacentral.a2z.com/datanet/etl-manager/jobs/' + jobId + '/runs/' + runId;
+    statusEl.innerHTML = 'Waiting for results... <a href="' + jobRunUrl + '" target="_blank" style="color:#0066ff;">View job run</a>';
+    await pollJobRun(runId, statusEl, jobRunUrl);
 
     // 5. Download results
     statusEl.textContent = 'Downloading results...';
@@ -2611,7 +2635,11 @@ async function fetchDatanetData() {
     tryAutoMerge();
 
   } catch (err) {
-    errorEl.textContent = err.message;
+    if (err.message.includes('Midway') || err.message.includes('Unauthenticated')) {
+      errorEl.innerHTML = 'Midway session expired. <a href="https://midway-auth.amazon.com/login?next=https://datanet-service.amazon.com" target="_blank" style="color:#0066ff;">Log in to Midway</a>, then try again.';
+    } else {
+      errorEl.textContent = err.message;
+    }
     statusEl.textContent = '';
     btn.textContent = 'Fetch Datanet Data';
   } finally {

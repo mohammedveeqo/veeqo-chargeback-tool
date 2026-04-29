@@ -39,6 +39,7 @@
       <p id="datanet-status" class="datanet-status"></p>
       <details class="manual-upload-fallback">
         <summary>Or upload manually</summary>
+        <button id="copy-datanet-sql-btn" style="display: none; margin-bottom: 6px;">Copy Datanet SQL</button>
         <input type="file" id="datanet-file" accept=".csv,.xlsx" aria-label="Upload Datanet Export">
         <p class="upload-hint">Click or drag file here (.csv, .xlsx)</p>
       </details>
@@ -51,7 +52,7 @@
   <section id="turing-lookup-section">
     <label>Quick Lookup (Turing)</label>
     <div class="turing-input-row">
-      <input type="text" id="turing-tracking-input" placeholder="Enter tracking number" aria-label="Tracking number for Turing lookup">
+      <textarea id="turing-tracking-input" placeholder="Enter tracking numbers (comma or newline separated)" aria-label="Tracking numbers for Turing lookup" rows="1"></textarea>
       <button id="turing-add-btn">Add</button>
     </div>
     <p id="turing-status" class="turing-status"></p>
@@ -60,7 +61,6 @@
 
   <!-- Datanet SQL + Merge Section -->
   <section id="merge-section">
-    <button id="copy-datanet-sql-btn" style="display: none;">Copy Datanet SQL</button>
   </section>
 
   <!-- Action Buttons Bar (hidden until merge completes) -->
