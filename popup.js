@@ -590,7 +590,11 @@ function setupUploadHandlers() {
 
   // Click anywhere on the box to open file picker
   teArea.addEventListener('click', () => teFile.click());
-  dnArea.addEventListener('click', () => dnFile.click());
+  dnArea.addEventListener('click', (e) => {
+    // Don't open file picker when clicking the fetch button, status, or details/summary
+    if (e.target.closest('#fetch-datanet-btn, .datanet-status, .manual-upload-fallback')) return;
+    dnFile.click();
+  });
 
   teFile.addEventListener('change', (e) => {
     if (e.target.files.length > 0) handleFileUpload(e.target.files[0], 'task-engine');
@@ -1352,10 +1356,49 @@ function renderDisputeStrengthSummary(rows) {
   var bar = document.createElement('div');
   bar.id = 'dispute-strength-summary';
   bar.className = 'dispute-strength-summary';
-  bar.innerHTML =
-    '<span class="badge-strong">' + strong + ' Strong</span> ' +
-    '<span class="badge-moderate">' + moderate + ' Moderate</span> ' +
-    '<span class="badge-weak">' + weak + ' Weak</span>';
+
+  var strongSpan = document.createElement('span');
+  strongSpan.className = 'badge-strong summary-badge-tip';
+  strongSpan.textContent = strong + ' Strong';
+
+  var modSpan = document.createElement('span');
+  modSpan.className = 'badge-moderate summary-badge-tip';
+  modSpan.textContent = moderate + ' Moderate';
+
+  var weakSpan = document.createElement('span');
+  weakSpan.className = 'badge-weak summary-badge-tip';
+  weakSpan.textContent = weak + ' Weak';
+
+  var tooltips = {
+    Strong: 'Significant dimension differences with carrier-only surcharges, large billable weight gaps, or clear mismatches with no shared surcharges. Best candidates for dispute.',
+    Moderate: 'Small dimension differences with billable weight impact, seller dims close to surcharge thresholds, low chargeback amounts, or One Rate issues. May need photo evidence to win.',
+    Weak: 'Data matches with no surcharge differences, Over Max flags, zero/negative chargebacks, or identical surcharges with minimal dim differences. Unlikely to succeed.'
+  };
+
+  [['Strong', strongSpan], ['Moderate', modSpan], ['Weak', weakSpan]].forEach(function(pair) {
+    var key = pair[0], span = pair[1];
+    var wrapper = document.createElement('div');
+    wrapper.className = 'summary-tip-wrapper';
+
+    var popup = document.createElement('div');
+    popup.className = 'summary-tip-popup';
+    popup.textContent = tooltips[key];
+
+    var hideTimer = null;
+    wrapper.addEventListener('mouseenter', function() {
+      clearTimeout(hideTimer);
+      // Close other summary popups
+      document.querySelectorAll('.summary-tip-popup').forEach(function(p) { p.style.display = 'none'; });
+      popup.style.display = 'block';
+    });
+    wrapper.addEventListener('mouseleave', function() {
+      hideTimer = setTimeout(function() { popup.style.display = 'none'; }, 200);
+    });
+
+    wrapper.appendChild(span);
+    wrapper.appendChild(popup);
+    bar.appendChild(wrapper);
+  });
 
   var exportBtn = document.createElement('button');
   exportBtn.className = 'btn-export-insights';
@@ -2223,6 +2266,360 @@ function wireTabHandlers() {
 
 /* ===== (Merge is now automatic — no button wiring needed) ===== */
 
+/* ===== Turing Quick Lookup ===== */
+
+function turingFetch(trackingNumber) {
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage({ type: 'turingFetch', trackingNumber }, (response) => {
+      if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
+      if (!response || !response.ok) {
+        const body = response ? response.body : 'No response';
+        if (body.includes('Unauthenticated') || response.status === 401) return reject(new Error('Midway session expired.'));
+        return reject(new Error('Turing API error: ' + body));
+      }
+      try { resolve(JSON.parse(response.body)); }
+      catch (e) { reject(new Error('Invalid response from Turing')); }
+    });
+  });
+}
+
+function mapTuringToDatanetRow(data) {
+  const sc = data.shippingContainer || {};
+  const pa = sc.PhysicalAttributes || {};
+  const len = pa.Length ? pa.Length.Value : 0;
+  const wid = pa.Width ? pa.Width.Value : 0;
+  const hgt = pa.Height ? pa.Height.Value : 0;
+  let weight = pa.Weight ? pa.Weight.Value : 0;
+  // Convert OZ to LBS if needed
+  if (pa.Weight && pa.Weight.Unit === 'OZ') weight = weight / 16;
+
+  // Extract charges from CHARGE_SELLER transaction
+  const txns = data.financialTransactions || [];
+  const csTxn = txns.find(t => t.TransactionType === 'CHARGE_SELLER') || {};
+  const charges = csTxn.Charges || [];
+
+  function chargeVal(id) {
+    const c = charges.find(ch => ch.ChargeId === id);
+    return c ? (c.CarrierCurrency ? c.CarrierCurrency.Value : 0) : 0;
+  }
+
+  // Seller charges (what seller was charged)
+  function sellerChargeVal(id) {
+    const c = charges.find(ch => ch.ChargeId === id);
+    return c ? (c.SellerCurrency ? c.SellerCurrency.Value : 0) : 0;
+  }
+
+  const baseCharge = chargeVal('BASE_CHARGE');
+  const deliveryArea = chargeVal('DELIVERY_AREA_SURCHARGE');
+  const fuel = chargeVal('FUEL_SURCHARGE');
+  const oversize = chargeVal('OVERSIZE_CHARGE');
+  const specialHandling = chargeVal('SPECIAL_HANDLING_CHARGE');
+  const overmax = chargeVal('OVERMAX_CHARGE');
+  const total = charges.reduce((sum, ch) => sum + (ch.CarrierCurrency ? ch.CarrierCurrency.Value : 0), 0);
+  const sellerTotal = charges.reduce((sum, ch) => sum + (ch.SellerCurrency ? ch.SellerCurrency.Value : 0), 0);
+  const otherCharges = total - baseCharge - deliveryArea - fuel - oversize - specialHandling - overmax;
+
+  const chargeBreakdown = charges
+    .filter(ch => ch.CarrierCurrency && ch.CarrierCurrency.Value !== 0)
+    .map(ch => ch.ChargeId + '= ' + ch.CarrierCurrency.Value.toFixed(2))
+    .join(', ');
+
+  return {
+    trackingNumber: sc.CarrierTransactionId || '',
+    // Seller data (from PhysicalAttributes — what seller declared)
+    sellerLength: len,
+    sellerWidth: wid,
+    sellerHeight: hgt,
+    sellerWeight: Math.round(weight * 100) / 100,
+    sellerBaseRate: Math.round(sellerTotal * 100) / 100,
+    sellerTotal: Math.round(sellerTotal * 100) / 100,
+    // Carrier data (from charges — what carrier invoiced)
+    carrierAuditedLength: len,
+    carrierAuditedWidth: wid,
+    carrierAuditedHeight: hgt,
+    carrierAuditedWeight: Math.round(weight * 100) / 100,
+    carrierAuditedTotal: Math.round(total * 100) / 100,
+    carrierAuditedBaseCharge: baseCharge,
+    deliveryAreaSurcharge: deliveryArea,
+    fuelSurcharge: fuel,
+    oversizeSurcharge: oversize,
+    specialHandlingSurcharge: specialHandling,
+    overmaxSurcharge: overmax,
+    otherCharges: Math.round(otherCharges * 100) / 100,
+    invoiceDate: csTxn.TransactionDate ? new Date(csTxn.TransactionDate).toISOString().slice(0, 10) : '',
+    chargeBreakdown: chargeBreakdown,
+    // Extra fields from Turing
+    _carrier: sc.CarrierId || '',
+    _orderId: sc.OrderId || '',
+    _serviceId: sc.ShippingServiceId || ''
+  };
+}
+
+async function turingQuickLookup() {
+  const input = document.getElementById('turing-tracking-input');
+  const statusEl = document.getElementById('turing-status');
+  const errorEl = document.getElementById('turing-error');
+  const btn = document.getElementById('turing-add-btn');
+  const tn = (input.value || '').trim();
+
+  errorEl.textContent = '';
+  statusEl.textContent = '';
+
+  if (!tn) { errorEl.textContent = 'Enter a tracking number.'; return; }
+
+  // Check if already in table
+  if (state.mergedRows.some(r => r.trackingNumber === tn) ||
+      (state.datanetRows && state.datanetRows.some(r => r.trackingNumber === tn))) {
+    errorEl.textContent = 'Tracking number already in the table.';
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = '...';
+  statusEl.textContent = 'Looking up ' + tn;
+
+  try {
+    const data = await turingFetch(tn);
+    if (!data.shippingContainer) throw new Error('No shipment found for this tracking number.');
+
+    const dnRow = mapTuringToDatanetRow(data);
+
+    // Initialize datanetRows if needed
+    if (!state.datanetRows) state.datanetRows = [];
+    state.datanetRows.push(dnRow);
+
+    // If we have task engine rows, try merge; otherwise build a standalone table
+    if (state.taskEngineRows) {
+      tryAutoMerge();
+    } else {
+      // No task engine data — show Turing data directly in the table
+      const row = {
+        ...dnRow,
+        carrier: dnRow._carrier,
+        orderId: dnRow._orderId,
+        serviceName: dnRow._serviceId,
+        orderNumber: dnRow._orderId
+      };
+      calculateFields(row);
+      state.mergedRows.push(row);
+      renderTable(filterByTab(state.mergedRows, state.activeTab));
+      updateTabCounts(state.mergedRows);
+      document.getElementById('action-buttons').style.display = '';
+      document.getElementById('row-count').textContent = state.mergedRows.length + ' rows';
+    }
+
+    statusEl.textContent = 'Added ' + tn + ' (' + dnRow._carrier + ')';
+    input.value = '';
+    input.focus();
+
+  } catch (err) {
+    errorEl.textContent = err.message;
+    statusEl.textContent = '';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Add';
+  }
+}
+
+/* ===== Datanet API Integration ===== */
+
+const DATANET_API = 'https://datanet-service.amazon.com';
+
+function parseDatanetProfileUrl(url) {
+  const profileMatch = url.match(/profile_id\/(\d+)/);
+  const jobMatch = url.match(/job_id\/(\d+)/);
+  return {
+    profileId: profileMatch ? profileMatch[1] : null,
+    jobId: jobMatch ? jobMatch[1] : null
+  };
+}
+
+async function datanetFetch(path, options = {}) {
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage({ type: 'datanetFetch', path, options: { method: options.method, body: options.body, headers: options.headers } }, (response) => {
+      if (chrome.runtime.lastError) {
+        reject(new Error('Extension error: ' + chrome.runtime.lastError.message));
+        return;
+      }
+      if (!response || !response.ok) {
+        const body = response ? response.body : 'No response';
+        if (body.includes('Unauthenticated')) reject(new Error('Midway session expired. Please refresh your Midway login.'));
+        else reject(new Error('Datanet API error: ' + (response ? response.status : 'unknown') + ' - ' + body));
+        return;
+      }
+      try { resolve(JSON.parse(response.body)); }
+      catch (e) { reject(new Error('Invalid JSON response from Datanet')); }
+    });
+  });
+}
+
+async function getDatanetProfile(profileId) {
+  const data = await datanetFetch('/jobProfile/TRANSFORM/' + profileId);
+  return data;
+}
+
+async function updateDatanetProfileSQL(profileId, profileObj, newSQL) {
+  // Replace hardcoded date with Datanet's runtime placeholder for the profile
+  const profileSQL = newSQL.replace(/DATE '\d{4}-\d{2}-\d{2}'/, "DATE '{RUN_DATE_YYYY-MM-DD}'");
+  const updated = { ...profileObj, sql: profileSQL };
+  delete updated.versionAttributes;
+  await datanetFetch('/jobProfile/TRANSFORM/' + profileId, {
+    method: 'POST',
+    body: JSON.stringify(updated)
+  });
+}
+
+async function runDatanetJob(jobId) {
+  const today = new Date().toISOString().slice(0, 10);
+  const data = await datanetFetch('/jobRun/-/' + jobId + '/' + today + '?scheduled=false', { method: 'POST' });
+  const runs = data.jobRuns || [];
+  if (runs.length === 0) throw new Error('No job run created');
+  return runs[0].id;
+}
+
+async function pollJobRun(runId, statusEl) {
+  const maxAttempts = 60; // 10 minutes max
+  for (let i = 0; i < maxAttempts; i++) {
+    const data = await datanetFetch('/jobRun/-/' + runId);
+    const jr = data.jobRun || data;
+    const status = jr.status;
+    if (statusEl) statusEl.textContent = 'Status: ' + status + ' (' + (i * 10) + 's)';
+    if (status === 'SUCCESS') return jr;
+    if (status === 'ERROR' || status === 'KILLED' || status === 'CANCELLED') {
+      throw new Error('Job failed with status: ' + status);
+    }
+    await new Promise(r => setTimeout(r, 10000));
+  }
+  throw new Error('Job timed out after 10 minutes');
+}
+
+async function downloadJobResults(runId) {
+  const meta = await datanetFetch('/jobRunResults/' + runId);
+  const url = meta.downloadUrl;
+  if (!url) throw new Error('No download URL in job results');
+  // Fetch from S3 via background to avoid CORS
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage({ type: 'datanetFetch', path: '', options: { _rawUrl: url } }, (response) => {
+      if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
+      if (!response || !response.ok) return reject(new Error('Failed to download results'));
+      resolve(response.body);
+    });
+  });
+}
+
+function parseTSVToRows(tsv) {
+  const lines = tsv.trim().split('\n');
+  if (lines.length < 2) return [];
+  const headers = lines[0].split('\t');
+  return lines.slice(1).map(line => {
+    const vals = line.split('\t');
+    const obj = {};
+    headers.forEach((h, i) => { obj[h.trim()] = (vals[i] || '').trim(); });
+    return obj;
+  });
+}
+
+async function fetchDatanetData() {
+  const btn = document.getElementById('fetch-datanet-btn');
+  const statusEl = document.getElementById('datanet-status');
+  const filenameEl = document.getElementById('datanet-filename');
+  const errorEl = document.getElementById('datanet-error');
+
+  errorEl.textContent = '';
+  filenameEl.textContent = '';
+
+  // Validate prerequisites
+  if (!state.taskEngineRows || state.taskEngineRows.length === 0) {
+    errorEl.textContent = 'Upload a Task Engine export first.';
+    return;
+  }
+
+  const savedUrl = (document.getElementById('datanet-profile-url').value || '').trim();
+  if (!savedUrl) {
+    errorEl.textContent = 'Paste your Datanet profile URL in the header first.';
+    return;
+  }
+
+  const { profileId } = parseDatanetProfileUrl(savedUrl);
+  if (!profileId) {
+    errorEl.textContent = 'Could not find profile_id in the URL. Use a Data Central profile or job URL.';
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = 'Working...';
+  statusEl.textContent = 'Checking Midway auth...';
+
+  try {
+    // 0. Check Midway auth first
+    try {
+      await datanetFetch('/whoAmI');
+    } catch (authErr) {
+      throw new Error('Midway session expired. Open midway-auth.amazon.com in your browser and log in, then try again.');
+    }
+
+    // 1. Get profile and its job IDs
+    statusEl.textContent = 'Fetching profile...';
+    const profileData = await getDatanetProfile(profileId);
+    const profile = profileData.jobProfile;
+    const jobIds = profileData.jobIds || [];
+    if (jobIds.length === 0) throw new Error('No jobs found for this profile. Create a job in Data Central first.');
+
+    // Use the first job ID (or the one from URL if available)
+    const { jobId: urlJobId } = parseDatanetProfileUrl(savedUrl);
+    const jobId = urlJobId || String(jobIds[0]);
+
+    // 2. Generate and update SQL
+    const trackingNumbers = state.taskEngineRows.map(r => r.trackingNumber).filter(tn => tn && tn.trim());
+    if (trackingNumbers.length === 0) throw new Error('No tracking numbers found in Task Engine data.');
+
+    statusEl.textContent = 'Updating profile SQL (' + trackingNumbers.length + ' tracking numbers)...';
+    const newSQL = generateDatanetSQL(trackingNumbers);
+    await updateDatanetProfileSQL(profileId, profile, newSQL);
+
+    // 3. Run the job
+    statusEl.textContent = 'Running job ' + jobId + '...';
+    const runId = await runDatanetJob(jobId);
+
+    // 4. Poll for completion
+    statusEl.textContent = 'Waiting for results...';
+    await pollJobRun(runId, statusEl);
+
+    // 5. Download results
+    statusEl.textContent = 'Downloading results...';
+    const tsv = await downloadJobResults(runId);
+    const rows = parseTSVToRows(tsv);
+
+    if (rows.length === 0) {
+      throw new Error('Query returned no results. Check that the tracking numbers exist in the invoice data.');
+    }
+
+    // 6. Map and load into state
+    const mapped = rows.map(mapDatanetRow);
+    const seen = new Set();
+    const deduped = mapped.filter(r => {
+      if (seen.has(r.trackingNumber)) return false;
+      seen.add(r.trackingNumber);
+      return true;
+    });
+
+    state.datanetRows = deduped;
+    filenameEl.textContent = 'Datanet API (' + deduped.length + ' rows)';
+    statusEl.textContent = 'Done — ' + deduped.length + ' rows loaded';
+    btn.textContent = 'Fetched';
+
+    tryAutoMerge();
+
+  } catch (err) {
+    errorEl.textContent = err.message;
+    statusEl.textContent = '';
+    btn.textContent = 'Fetch Datanet Data';
+  } finally {
+    btn.disabled = false;
+    if (btn.textContent === 'Working...') btn.textContent = 'Fetch Datanet Data';
+  }
+}
+
 /* ===== Init (Bootstrap) ===== */
 
 function init() {
@@ -2251,6 +2648,15 @@ function init() {
 
   // Auto-fetch seller details on load
   fetchSellerDetails();
+
+  // Fetch Datanet Data button
+  document.getElementById('fetch-datanet-btn').addEventListener('click', fetchDatanetData);
+
+  // Turing Quick Lookup
+  document.getElementById('turing-add-btn').addEventListener('click', turingQuickLookup);
+  document.getElementById('turing-tracking-input').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') turingQuickLookup();
+  });
 
   setupUploadHandlers();
   wireTabHandlers();

@@ -34,12 +34,28 @@
       <p class="upload-error" id="task-engine-error"></p>
     </div>
     <div class="upload-area" id="datanet-upload">
-      <label>Upload Datanet Export</label>
-      <input type="file" id="datanet-file" accept=".csv,.xlsx" aria-label="Upload Datanet Export">
-      <p class="upload-hint">Click or drag file here (.csv, .xlsx)</p>
+      <label>Datanet Export</label>
+      <button id="fetch-datanet-btn" class="fetch-datanet-btn" aria-label="Fetch Datanet Data">Fetch Datanet Data</button>
+      <p id="datanet-status" class="datanet-status"></p>
+      <details class="manual-upload-fallback">
+        <summary>Or upload manually</summary>
+        <input type="file" id="datanet-file" accept=".csv,.xlsx" aria-label="Upload Datanet Export">
+        <p class="upload-hint">Click or drag file here (.csv, .xlsx)</p>
+      </details>
       <p class="upload-filename" id="datanet-filename"></p>
       <p class="upload-error" id="datanet-error"></p>
     </div>
+  </section>
+
+  <!-- Turing Quick Lookup -->
+  <section id="turing-lookup-section">
+    <label>Quick Lookup (Turing)</label>
+    <div class="turing-input-row">
+      <input type="text" id="turing-tracking-input" placeholder="Enter tracking number" aria-label="Tracking number for Turing lookup">
+      <button id="turing-add-btn">Add</button>
+    </div>
+    <p id="turing-status" class="turing-status"></p>
+    <p id="turing-error" class="upload-error"></p>
   </section>
 
   <!-- Datanet SQL + Merge Section -->

@@ -3,11 +3,15 @@
   "name": "Veeqo Chargeback Tool",
   "version": "1.0.0",
   "description": "Merge Task Engine and Datanet exports to process carrier chargeback disputes.",
-  "permissions": ["storage"],
+  "permissions": ["storage", "cookies"],
   "host_permissions": [
     "https://app.veeqo.com/*",
     "https://api.veeqo.com/*",
-    "https://t.corp.amazon.com/*"
+    "https://t.corp.amazon.com/*",
+    "https://datanet-service.amazon.com/*",
+    "https://datanet-jobrun-results-bucket-prod.s3-us-west-2.amazonaws.com/*",
+    "https://midway-auth.amazon.com/*",
+    "https://na.turing.sfs.amazon.dev/*"
   ],
   "background": {
     "service_worker": "background.js"
