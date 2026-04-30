@@ -264,6 +264,9 @@ function openTCorpModal(selectedRows) {
   // Defaults
   document.getElementById('tcorp-seller-support').value = 'Carrier Chargebacks SOP v2.0';
 
+  // Show SPLAT CSV export button only for SPLAT modals
+  document.getElementById('tcorp-export-splat-btn').style.display = state._tcorpType === 'splat' ? '' : 'none';
+
   modal.style.display = 'flex';
 }
 
@@ -550,17 +553,19 @@ function performMerge() {
     merged.forEach(calculateFields);
     state.mergedRows = merged;
 
-    // Find the carrier tab with the highest row count
+    // Find the carrier tab with the highest row count (only on first merge)
     var carrierTabs = ['FEDEX', 'UPS', 'USPS', 'DHL', 'ONTRAC'];
-    var bestTab = 'All';
-    var bestCount = 0;
-    carrierTabs.forEach(function(c) {
-      var count = merged.filter(function(r) { return r.carrier === c; }).length;
-      if (count > bestCount) {
-        bestCount = count;
-        bestTab = c === 'FEDEX' ? 'FedEx' : c === 'ONTRAC' ? 'OnTrac' : c;
-      }
-    });
+    var bestTab = state.activeTab || 'All';
+    if (state.mergedRows.length === 0) {
+      var bestCount = 0;
+      carrierTabs.forEach(function(c) {
+        var count = merged.filter(function(r) { return r.carrier === c; }).length;
+        if (count > bestCount) {
+          bestCount = count;
+          bestTab = c === 'FEDEX' ? 'FedEx' : c === 'ONTRAC' ? 'OnTrac' : c;
+        }
+      });
+    }
     state.activeTab = bestTab;
 
     const filtered = filterByTab(merged, bestTab);
@@ -770,6 +775,107 @@ function mergeData(taskRows, datanetRows) {
 }
 
 /* ===== Calculation Engine (Task 8.1) ===== */
+/* ===== Dispute Reason Generator ===== */
+
+function generateDisputeReason(row) {
+  const reasons = [];
+  const txns = row._turingTransactions || [];
+  const pa = row._turingPhysicalAttributes || {};
+  const carrier = (row.carrier || '').toUpperCase();
+  const service = (row.serviceName || '').toUpperCase();
+
+  if (txns.length === 0) return { reasons: [], strength: null };
+
+  const promise = txns.find(t => t.TransactionType === 'PROMISE_RATE');
+  const charge = txns.find(t => t.TransactionType === 'CHARGE_SELLER');
+  const chargeback = txns.find(t => t.TransactionType === 'CHARGEBACK_SELLER');
+
+  function getCharge(txn, chargeId, field) {
+    if (!txn || !txn.Charges) return 0;
+    const c = txn.Charges.find(ch => ch.ChargeId === chargeId);
+    return c ? ((c[field] || {}).Value || 0) : 0;
+  }
+  function sumCharges(txn, field) {
+    if (!txn || !txn.Charges) return 0;
+    return txn.Charges.reduce((s, c) => s + ((c[field] || {}).Value || 0), 0);
+  }
+
+  const chargeBase = getCharge(charge, 'BASE_CHARGE', 'SellerCurrency');
+  const cbTotal = chargeback ? sumCharges(chargeback, 'CarrierCurrency') : 0;
+
+  if (!chargeback || cbTotal === 0) {
+    reasons.push('No chargeback — original charge stands');
+    return { reasons, strength: 'Weak' };
+  }
+
+  // Parse chargeback components
+  const cbBase = getCharge(chargeback, 'BASE_CHARGE', 'CarrierCurrency');
+  const cbOther = getCharge(chargeback, 'OTHER', 'CarrierCurrency');
+  const cbDiscount = getCharge(chargeback, 'DISCOUNT', 'CarrierCurrency');
+  const cbDAS = getCharge(chargeback, 'DELIVERY_AREA_SURCHARGE', 'CarrierCurrency');
+  const cbFuel = getCharge(chargeback, 'FUEL_SURCHARGE', 'CarrierCurrency');
+  const cbOversize = getCharge(chargeback, 'OVERSIZE_CHARGE', 'CarrierCurrency');
+  const cbAHS = getCharge(chargeback, 'ADDITIONAL_HANDLING_SURCHARGE', 'CarrierCurrency');
+  const cbSpecial = getCharge(chargeback, 'SPECIAL_HANDLING_CHARGE', 'CarrierCurrency');
+
+  if (cbBase !== 0) {
+    const invMeta = chargeback.InvoiceMetadata || {};
+    const updatedCharges = invMeta.UpdatedCharges || [];
+    const newBase = updatedCharges.reduce((s, c) => c.ChargeId === 'BASE_CHARGE' ? s + (c.CarrierCurrency && c.CarrierCurrency.BalanceType !== 'CREDIT' ? c.CarrierCurrency.Value : 0) : s, 0);
+    if (newBase > 0) {
+      reasons.push('Base re-rated: $' + chargeBase.toFixed(2) + ' → $' + newBase.toFixed(2));
+    } else {
+      reasons.push('Base adjustment: ' + (cbBase > 0 ? '+' : '') + '$' + cbBase.toFixed(2));
+    }
+  }
+  if (cbDAS !== 0) reasons.push('Delivery area surcharge: +$' + cbDAS.toFixed(2));
+  if (cbFuel !== 0) reasons.push('Fuel surcharge: +$' + cbFuel.toFixed(2));
+  if (cbOversize !== 0) reasons.push('Oversize surcharge: +$' + cbOversize.toFixed(2));
+  if (cbAHS !== 0) reasons.push('Additional handling: +$' + cbAHS.toFixed(2));
+  if (cbSpecial !== 0) reasons.push('Special handling: +$' + cbSpecial.toFixed(2));
+  if (cbOther !== 0) reasons.push('Other charges: +$' + cbOther.toFixed(2));
+  if (cbDiscount < 0) reasons.push('Discount: -$' + Math.abs(cbDiscount).toFixed(2));
+
+  // Weight analysis
+  const sellerWeightLbs = pa.Weight ? (pa.Weight.Unit === 'OZ' ? pa.Weight.Value / 16 : pa.Weight.Value) : null;
+  if (sellerWeightLbs !== null && row.carrierAuditedWeight !== 'N/A') {
+    const diff = Math.abs(sellerWeightLbs - row.carrierAuditedWeight);
+    if (diff <= 1) reasons.push('Weight: rounding only (' + sellerWeightLbs.toFixed(1) + ' → ' + row.carrierAuditedWeight + ' lbs)');
+  }
+
+  // Dims analysis
+  if (row.sellerLength !== 'N/A' && row.carrierAuditedLength !== 'N/A') {
+    if (row.sellerLength === row.carrierAuditedLength && row.sellerWidth === row.carrierAuditedWidth && row.sellerHeight === row.carrierAuditedHeight) {
+      reasons.push('Dims match exactly — pricing adjustment, not measurement error');
+    }
+  }
+
+  // One Rate detection
+  if (service.includes('ONE_RATE') || service.includes('ONERATE')) {
+    const cv = row.sellerLength !== 'N/A' ? row.sellerLength * row.sellerWidth * row.sellerHeight : 0;
+    if (cv > 2200 || (sellerWeightLbs && sellerWeightLbs > 50)) {
+      reasons.push('One Rate limits exceeded (50 lbs / 2,200 in³) — re-rated to standard');
+    } else {
+      reasons.push('One Rate service — carrier may have re-rated to standard pricing');
+    }
+  }
+
+  // Strength from transaction analysis
+  let strength = null;
+  const dimsOK = row.sellerLength === 'N/A' || row.carrierAuditedLength === 'N/A' ||
+    (Math.abs(row.sellerLength - row.carrierAuditedLength) <= 1 && Math.abs(row.sellerWidth - row.carrierAuditedWidth) <= 1 && Math.abs(row.sellerHeight - row.carrierAuditedHeight) <= 1);
+  const weightOK = sellerWeightLbs === null || row.carrierAuditedWeight === 'N/A' || Math.abs(sellerWeightLbs - row.carrierAuditedWeight) <= 1;
+
+  if (dimsOK && weightOK && cbTotal > 0) {
+    strength = 'Strong'; // Seller data correct, chargeback is carrier pricing issue
+  } else if (cbTotal > 0 && cbTotal < 2) {
+    strength = 'Moderate';
+  }
+
+  if (reasons.length === 0) reasons.push('Chargeback: $' + cbTotal.toFixed(2));
+  return { reasons, strength };
+}
+
 
 function calculateFields(row) {
   // --- Seller Dimensional Weight ---
@@ -999,6 +1105,12 @@ function calculateFields(row) {
   } else if (chargebackNum !== null && chargebackNum > 5 && row.status === 'Mismatch' && !hasSharedFlag) {
     row.disputeStrength = 'Strong';
   }
+
+  // Generate detailed reason from Turing transaction data
+  const reasonResult = generateDisputeReason(row);
+  row.disputeReason = reasonResult.reasons.join('; ');
+  // Override strength if Turing analysis gives a stronger signal
+  if (reasonResult.strength) row.disputeStrength = reasonResult.strength;
 
   return row;
 }
@@ -1296,6 +1408,38 @@ function buildDisputePopup(row) {
   // Stats footer
   var stats = document.createElement('div');
   stats.className = 'dispute-popup-stats';
+
+  // Carrier rules reference
+  var carrierUpper = (row.carrier || '').toUpperCase();
+  var rulesLines = [];
+  if (carrierUpper === 'FEDEX') {
+    rulesLines.push('FedEx rules: Dim weight = L×W×H / 139. Bills greater of actual or dim weight.');
+    rulesLines.push('AHS-Weight: >50 lbs. AHS-Dim: longest >48" or 2nd >30". AHS-Cubic: >10,368 in³.');
+    rulesLines.push('Oversize: longest >96" or L+G >130" or >17,280 in³. Over Max: >150 lbs or >108" or L+G >165".');
+    if ((row.serviceName || '').toUpperCase().includes('ONE_RATE') || (row.serviceName || '').toUpperCase().includes('ONERATE')) {
+      rulesLines.push('One Rate limits: max 50 lbs, max 2,200 in³. If exceeded, carrier re-rates to standard commercial pricing.');
+    }
+    rulesLines.push('Only the highest surcharge applies if multiple triggered. Rounds up to nearest inch.');
+  } else if (carrierUpper === 'UPS') {
+    rulesLines.push('UPS rules: Dim weight = L×W×H / 139. Bills greater of actual or dim weight.');
+    rulesLines.push('AHS-Weight: >50 lbs. AHS-Dim: longest >48" or 2nd >30". AHS-Cubic: >10,368 in³.');
+    rulesLines.push('Large Package: longest >96" or L+G >130" or >17,280 in³ or >110 lbs.');
+    rulesLines.push('Over Max: >150 lbs or >108" or L+G >165". Rounds up to nearest inch.');
+  } else if (carrierUpper === 'USPS') {
+    rulesLines.push('USPS rules: Dim weight = L×W×H / 166 (Priority/Express over 1,728 in³).');
+    rulesLines.push('Non-Standard small: longest 22-30" ($4.50). Non-Standard large: longest >30" ($10-$21).');
+    rulesLines.push('Volume surcharge: >3,456 in³ ($21). Balloon: L+G 84-108" and <20 lbs (charged at 20 lb rate).');
+    rulesLines.push('Over Max: >70 lbs or L+G >130". Dim noncompliance fee: $3.');
+  } else if (carrierUpper === 'DHL') {
+    rulesLines.push('DHL rules: Dim weight = L×W×H / 139. AHS-Weight: >50 lbs. AHS-Dim: longest >48".');
+  }
+  if (rulesLines.length > 0) {
+    rulesLines.push('L+G = Length + (2 × Width) + (2 × Height). All carriers round up to nearest inch.');
+    var rulesBlock = document.createElement('div');
+    rulesBlock.style.cssText = 'margin-top:8px;padding:6px 8px;background:#f8f9fa;border-radius:4px;font-size:10px;color:#666;line-height:1.5;';
+    rulesBlock.innerHTML = rulesLines.join('<br>');
+    stats.appendChild(rulesBlock);
+  }
   var cbAmt = row.chargebackAmount !== 'N/A' ? '$' + Number(row.chargebackAmount).toFixed(2) : 'N/A';
   stats.appendChild(createStatLine('Chargeback: ' + cbAmt));
 
@@ -1312,16 +1456,39 @@ function buildDisputePopup(row) {
   // Recommendation
   var rec = document.createElement('div');
   rec.className = 'dispute-popup-recommendation';
+
+  // Use Turing transaction analysis if available
+  var reasonText = row.disputeReason || '';
+  if (reasonText && reasonText !== 'No chargeback — original charge stands') {
+    var txnBlock = document.createElement('div');
+    txnBlock.className = 'dispute-popup-stat';
+    txnBlock.style.cssText = 'margin-top:6px;font-size:11px;color:#555;';
+    txnBlock.textContent = 'Transaction: ' + reasonText;
+    stats.appendChild(txnBlock);
+  }
+
   if (strength === 'Strong') {
-    rec.textContent = 'Recommendation: Strong dispute candidate. Request photo evidence from the seller and proceed.';
+    if (reasonText.includes('Dims match exactly') || reasonText.includes('pricing adjustment')) {
+      rec.textContent = 'Recommendation: Raise to ' + (row.carrier || 'carrier') + ' — seller entered correct dimensions. Chargeback is a carrier-side pricing adjustment, not a measurement error.';
+    } else if (reasonText.includes('rounding only')) {
+      rec.textContent = 'Recommendation: Raise to ' + (row.carrier || 'carrier') + ' — weight difference is standard carrier rounding. Seller data is correct.';
+    } else {
+      rec.textContent = 'Recommendation: Raise to ' + (row.carrier || 'carrier') + ' — strong dispute candidate. Request photo evidence from the seller and proceed.';
+    }
   } else if (strength === 'Weak') {
     if (row.chargebackAmount !== 'N/A' && row.chargebackAmount <= 0) {
       rec.textContent = 'Recommendation: No overcharge detected. No action needed.';
+    } else if (reasonText.includes('No chargeback')) {
+      rec.textContent = 'Recommendation: No chargeback found. Original charge stands — no dispute needed.';
     } else {
-      rec.textContent = 'Recommendation: Dispute is unlikely to succeed unless the seller has photo evidence proving their measurements are correct.';
+      rec.textContent = 'Recommendation: Push back on seller — carrier measurements show significant difference. Dispute unlikely to succeed without strong photo evidence.';
     }
   } else {
-    rec.textContent = 'Recommendation: Could go either way. Request photo evidence before deciding whether to dispute.';
+    if (reasonText.includes('One Rate')) {
+      rec.textContent = 'Recommendation: Check if One Rate re-rate is valid. If seller package was within One Rate limits, raise to ' + (row.carrier || 'carrier') + '. Otherwise push back on seller.';
+    } else {
+      rec.textContent = 'Recommendation: Could go either way. Request photo evidence from the seller before deciding whether to raise to ' + (row.carrier || 'carrier') + ' or push back.';
+    }
   }
   stats.appendChild(rec);
 
@@ -2161,6 +2328,13 @@ function wireActionButtons() {
     exportSplatCSV(selected);
   });
 
+  // T.Corp Modal — Export SPLAT CSV
+  document.getElementById('tcorp-export-splat-btn').addEventListener('click', () => {
+    if (state._tcorpSelectedRows && state._tcorpSelectedRows.length > 0) {
+      exportSplatCSV(state._tcorpSelectedRows);
+    }
+  });
+
   // T.Corp Modal — Copy All Fields
   document.getElementById('tcorp-copy-btn').addEventListener('click', async () => {
     try {
@@ -2291,68 +2465,81 @@ function mapTuringToDatanetRow(data) {
   const wid = pa.Width ? pa.Width.Value : 0;
   const hgt = pa.Height ? pa.Height.Value : 0;
   let weight = pa.Weight ? pa.Weight.Value : 0;
-  // Convert OZ to LBS if needed
   if (pa.Weight && pa.Weight.Unit === 'OZ') weight = weight / 16;
 
-  // Extract charges from CHARGE_SELLER transaction
   const txns = data.financialTransactions || [];
+
+  function signedVal(charge, field) {
+    if (!charge || !charge[field]) return 0;
+    var v = charge[field].Value || 0;
+    return charge[field].BalanceType === 'CREDIT' ? -v : v;
+  }
+
+  // CHARGE_SELLER = original label purchase charge
   const csTxn = txns.find(t => t.TransactionType === 'CHARGE_SELLER') || {};
-  const charges = csTxn.Charges || [];
+  const csCharges = csTxn.Charges || [];
+  const sellerTotal = csCharges.reduce((s, c) => s + signedVal(c, 'SellerCurrency'), 0);
+  const chargeBase = csCharges.reduce((s, c) => c.ChargeId === 'BASE_CHARGE' ? s + signedVal(c, 'SellerCurrency') : s, 0);
 
-  function chargeVal(id) {
-    const c = charges.find(ch => ch.ChargeId === id);
-    return c ? (c.CarrierCurrency ? c.CarrierCurrency.Value : 0) : 0;
-  }
+  // CHARGEBACK_SELLER = carrier audit adjustment
+  const cbTxn = txns.find(t => t.TransactionType === 'CHARGEBACK_SELLER') || {};
+  const cbCharges = cbTxn.Charges || [];
+  const chargebackNet = cbCharges.reduce((s, c) => s + signedVal(c, 'CarrierCurrency'), 0);
 
-  // Seller charges (what seller was charged)
-  function sellerChargeVal(id) {
-    const c = charges.find(ch => ch.ChargeId === id);
-    return c ? (c.SellerCurrency ? c.SellerCurrency.Value : 0) : 0;
-  }
+  function cbVal(id) { var c = cbCharges.find(ch => ch.ChargeId === id); return c ? signedVal(c, 'CarrierCurrency') : 0; }
+  const cbBase = cbVal('BASE_CHARGE');
+  const cbOther = cbVal('OTHER');
+  const cbDAS = cbVal('DELIVERY_AREA_SURCHARGE');
+  const cbFuel = cbVal('FUEL_SURCHARGE');
+  const cbOversize = cbVal('OVERSIZE_CHARGE');
+  const cbAHS = cbVal('ADDITIONAL_HANDLING_SURCHARGE');
+  const cbSpecial = cbVal('SPECIAL_HANDLING_CHARGE');
 
-  const baseCharge = chargeVal('BASE_CHARGE');
-  const deliveryArea = chargeVal('DELIVERY_AREA_SURCHARGE');
-  const fuel = chargeVal('FUEL_SURCHARGE');
-  const oversize = chargeVal('OVERSIZE_CHARGE');
-  const specialHandling = chargeVal('SPECIAL_HANDLING_CHARGE');
-  const overmax = chargeVal('OVERMAX_CHARGE');
-  const total = charges.reduce((sum, ch) => sum + (ch.CarrierCurrency ? ch.CarrierCurrency.Value : 0), 0);
-  const sellerTotal = charges.reduce((sum, ch) => sum + (ch.SellerCurrency ? ch.SellerCurrency.Value : 0), 0);
-  const otherCharges = total - baseCharge - deliveryArea - fuel - oversize - specialHandling - overmax;
+  // Carrier-audited dims from InvoiceMetadata
+  const invMeta = cbTxn.InvoiceMetadata || {};
+  const cPA = invMeta.PhysicalAttributes || {};
+  const cLen = cPA.Length ? cPA.Length.Value : 'N/A';
+  const cWid = cPA.Width ? cPA.Width.Value : 'N/A';
+  const cHgt = cPA.Height ? cPA.Height.Value : 'N/A';
+  let cWeight = cPA.Weight ? cPA.Weight.Value : 'N/A';
+  if (cWeight !== 'N/A' && cPA.Weight && cPA.Weight.Unit === 'OZ') cWeight = cWeight / 16;
 
-  const chargeBreakdown = charges
-    .filter(ch => ch.CarrierCurrency && ch.CarrierCurrency.Value !== 0)
-    .map(ch => ch.ChargeId + '= ' + ch.CarrierCurrency.Value.toFixed(2))
-    .join(', ');
+  // Updated base from InvoiceMetadata
+  const updatedCharges = invMeta.UpdatedCharges || [];
+  const updatedBase = updatedCharges.reduce((s, c) => c.ChargeId === 'BASE_CHARGE' ? s + signedVal(c, 'CarrierCurrency') : s, 0);
+
+  // Build charge breakdown
+  const parts = [];
+  if (updatedBase) parts.push('New base: $' + updatedBase.toFixed(2) + ' (was $' + chargeBase.toFixed(2) + ')');
+  else if (cbBase !== 0) parts.push('Base adj: ' + (cbBase > 0 ? '+' : '') + '$' + cbBase.toFixed(2));
+  if (cbDAS !== 0) parts.push('DAS: +$' + cbDAS.toFixed(2));
+  if (cbFuel !== 0) parts.push('Fuel: +$' + cbFuel.toFixed(2));
+  if (cbOversize !== 0) parts.push('Oversize: +$' + cbOversize.toFixed(2));
+  if (cbAHS !== 0) parts.push('AHS: +$' + cbAHS.toFixed(2));
+  if (cbSpecial !== 0) parts.push('Special: +$' + cbSpecial.toFixed(2));
+  if (cbOther < 0) parts.push('Discount: -$' + Math.abs(cbOther).toFixed(2));
+  else if (cbOther > 0) parts.push('Other: +$' + cbOther.toFixed(2));
+  parts.push('Net chargeback: $' + chargebackNet.toFixed(2));
 
   return {
     trackingNumber: sc.CarrierTransactionId || '',
-    // Seller data (from PhysicalAttributes — what seller declared)
-    sellerLength: len,
-    sellerWidth: wid,
-    sellerHeight: hgt,
+    sellerLength: len, sellerWidth: wid, sellerHeight: hgt,
     sellerWeight: Math.round(weight * 100) / 100,
     sellerBaseRate: Math.round(sellerTotal * 100) / 100,
     sellerTotal: Math.round(sellerTotal * 100) / 100,
-    // Carrier data (from charges — what carrier invoiced)
-    carrierAuditedLength: len,
-    carrierAuditedWidth: wid,
-    carrierAuditedHeight: hgt,
-    carrierAuditedWeight: Math.round(weight * 100) / 100,
-    carrierAuditedTotal: Math.round(total * 100) / 100,
-    carrierAuditedBaseCharge: baseCharge,
-    deliveryAreaSurcharge: deliveryArea,
-    fuelSurcharge: fuel,
-    oversizeSurcharge: oversize,
-    specialHandlingSurcharge: specialHandling,
-    overmaxSurcharge: overmax,
-    otherCharges: Math.round(otherCharges * 100) / 100,
-    invoiceDate: csTxn.TransactionDate ? new Date(csTxn.TransactionDate).toISOString().slice(0, 10) : '',
-    chargeBreakdown: chargeBreakdown,
-    // Extra fields from Turing
+    carrierAuditedLength: cLen, carrierAuditedWidth: cWid, carrierAuditedHeight: cHgt,
+    carrierAuditedWeight: cWeight !== 'N/A' ? Math.round(cWeight * 100) / 100 : 'N/A',
+    carrierAuditedTotal: Math.round((sellerTotal + chargebackNet) * 100) / 100,
+    carrierAuditedBaseCharge: updatedBase || Math.round((chargeBase + cbBase) * 100) / 100,
+    deliveryAreaSurcharge: cbDAS, fuelSurcharge: cbFuel,
+    oversizeSurcharge: cbOversize, specialHandlingSurcharge: cbSpecial,
+    overmaxSurcharge: 0, otherCharges: cbOther,
+    invoiceDate: invMeta.InvoiceDate ? new Date(invMeta.InvoiceDate).toISOString().slice(0, 10) : (csTxn.TransactionDate ? new Date(csTxn.TransactionDate).toISOString().slice(0, 10) : ''),
+    chargeBreakdown: parts.join(', ') || 'No chargeback',
     _carrier: sc.CarrierId || '',
     _orderId: sc.OrderId || 'Off-Amazon',
-    _serviceId: sc.ShippingServiceId || ''
+    _serviceId: sc.ShippingServiceId || '',
+    _turingTransactions: txns, _turingPhysicalAttributes: pa, _invoiceMetadata: invMeta
   };
 }
 
@@ -2383,9 +2570,11 @@ async function turingQuickLookup() {
     const tn = trackingNumbers[i];
     statusEl.textContent = 'Looking up ' + (i + 1) + '/' + trackingNumbers.length + ': ' + tn;
 
-    // Skip duplicates
-    if (state.mergedRows.some(r => r.trackingNumber === tn) ||
-        (state.datanetRows && state.datanetRows.some(r => r.trackingNumber === tn))) {
+    // Skip duplicates — check all sources
+    const isDupe = state.mergedRows.some(r => r.trackingNumber === tn) ||
+        (state.datanetRows && state.datanetRows.some(r => r.trackingNumber === tn)) ||
+        (state.taskEngineRows && state.taskEngineRows.some(r => r.trackingNumber === tn));
+    if (isDupe) {
       skipped++;
       continue;
     }
