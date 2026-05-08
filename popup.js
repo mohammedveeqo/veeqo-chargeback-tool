@@ -621,6 +621,9 @@ function performMerge() {
     const unmatchedCount = merged.length - matchedCount;
     showNotification('Merged: ' + matchedCount + ' matched, ' + unmatchedCount + ' unmatched out of ' + merged.length + ' total.', 'success');
 
+    // Render Action Plan
+    renderActionPlan();
+
     // Update combined flow step 3
     const strongCount = merged.filter(r => r.disputeStrength === 'Strong').length;
     const moderateCount = merged.filter(r => r.disputeStrength === 'Moderate').length;
@@ -1017,6 +1020,45 @@ function calculateFields(row) {
     return { name: flagName, carrierOnly: sellerFlags.indexOf(flagName) === -1 };
   });
 
+  // --- Requirement 31: Rate Reclassification Detection ---
+  row._isRateReclassification = false;
+  var dimsMatchExact = sellerDimsSorted && carrierDimsSorted &&
+    Math.abs(sellerDimsSorted[0] - carrierDimsSorted[0]) <= 1 &&
+    Math.abs(sellerDimsSorted[1] - carrierDimsSorted[1]) <= 1 &&
+    Math.abs(sellerDimsSorted[2] - carrierDimsSorted[2]) <= 1;
+
+  if (dimsMatchExact && row.chargebackAmount !== 'N/A' && row.chargebackAmount > 0) {
+    // Check if we have Turing transaction data showing rate reclassification
+    var txns = row._turingTransactions || [];
+    var invMeta = row._invoiceMetadata || {};
+    var csTxn = txns.find(function(t) { return t.TransactionType === 'CHARGE_SELLER'; });
+    var originalBase = 0;
+    if (csTxn && csTxn.Charges) {
+      var baseCharge = csTxn.Charges.find(function(c) { return c.ChargeId === 'BASE_CHARGE'; });
+      if (baseCharge) originalBase = (baseCharge.CarrierCurrency || baseCharge.SellerCurrency || {}).Value || 0;
+    }
+
+    var updatedCharges = invMeta.UpdatedCharges || [];
+    var newBase = 0;
+    var hasOtherCredit = false;
+    updatedCharges.forEach(function(c) {
+      if (c.ChargeId === 'BASE_CHARGE') newBase = (c.CarrierCurrency || c.SellerCurrency || {}).Value || 0;
+      if (c.ChargeId === 'OTHER' && ((c.CarrierCurrency || {}).BalanceType === 'CREDIT' || (c.SellerCurrency || {}).BalanceType === 'CREDIT')) hasOtherCredit = true;
+    });
+
+    // Also check from charge breakdown string
+    if (!newBase && row.chargeBreakdown && row.chargeBreakdown !== 'N/A') {
+      var baseMatch = row.chargeBreakdown.match(/New base:\s*\$?([\d.]+)/i);
+      if (baseMatch) newBase = parseFloat(baseMatch[1]);
+    }
+
+    if (newBase > 0 && originalBase > 0 && newBase > originalBase * 1.3) {
+      row._isRateReclassification = true;
+      row._rateReclass = { originalBase: originalBase, newBase: newBase, hasDiscount: hasOtherCredit };
+      row.surchargeFlags.push({ name: 'Rate Reclassification', carrierOnly: true, isRateReclass: true });
+    }
+  }
+
   // --- Dispute Insights ---
   row.disputeInsights = [];
 
@@ -1161,6 +1203,21 @@ function calculateFields(row) {
     row.disputeInsights.push('If the seller cannot provide photos (package already shipped), acceptable alternatives include: a third-party weigh receipt, product spec sheet with dimensions, or manufacturer listing confirming size/weight.');
   }
 
+  // Rule 31: Rate Reclassification insight
+  if (row._isRateReclassification && row._rateReclass) {
+    var rc = row._rateReclass;
+    var rcInsight = 'Dimensions match exactly but the charge increased. This is a rate reclassification — the carrier re-rated the package at a higher service tier (original: $' + rc.originalBase.toFixed(2) + ', new: $' + rc.newBase.toFixed(2) + ').';
+    if ((row.serviceName || '').toUpperCase().includes('ONE_RATE')) {
+      rcInsight += ' This typically happens when a One Rate package is reclassified to standard commercial pricing. Dispute basis: if the package met One Rate requirements at time of purchase, the reclassification may be incorrect.';
+    } else {
+      rcInsight += ' Rate changes can happen for various reasons (service tier change, zone correction, contract rate adjustment). Needs investigation.';
+    }
+    if (rc.hasDiscount) {
+      rcInsight += ' Note: a discount/credit was also applied, partially offsetting the increase.';
+    }
+    row.disputeInsights.unshift(rcInsight);
+  }
+
   // --- Dispute Strength (priority-ordered: Weak → Moderate → Strong → default Moderate) ---
   var allDimsWithin1 = dimDiffs ? dimDiffs.every(function(d) { return d <= 1; }) : false;
   var billableWeightDiff = (row.sellerBillableWeight !== 'N/A' && row.carrierBillableWeight !== 'N/A')
@@ -1177,6 +1234,14 @@ function calculateFields(row) {
   // ABSOLUTE RULE: Negative or zero chargeback = Weak, always (Req 30 fix)
   if (chargebackNum !== null && chargebackNum <= 0) {
     row.disputeStrength = 'Weak';
+  }
+  // Requirement 31: Rate Reclassification strength override
+  else if (row._isRateReclassification) {
+    if ((row.serviceName || '').toUpperCase().includes('ONE_RATE')) {
+      row.disputeStrength = 'Strong';
+    } else {
+      row.disputeStrength = 'Moderate';
+    }
   }
   // WEAK conditions (check first, first match wins)
   else if (row.status === 'Match' && !hasCarrierOnlyFlag) {
@@ -1970,7 +2035,10 @@ function renderTable(rows) {
           val.forEach(function(flag, fi) {
             if (fi > 0) td.appendChild(document.createTextNode(', '));
             var span = document.createElement('span');
-            if (flag.carrierOnly) {
+            if (flag.isRateReclass) {
+              span.className = 'flag-rate-reclass';
+              span.textContent = flag.name;
+            } else if (flag.carrierOnly) {
               span.className = 'flag-carrier-only';
               span.textContent = flag.name + ' (carrier only)';
             } else {
@@ -2861,11 +2929,13 @@ async function turingQuickLookup() {
     updateTabCounts(state.mergedRows);
     document.getElementById('action-buttons').style.display = '';
     document.getElementById('row-count').textContent = state.mergedRows.length + ' rows';
+    renderActionPlan();
   } else if (added > 0) {
     renderTable(filterByTab(state.mergedRows, state.activeTab));
     updateTabCounts(state.mergedRows);
     document.getElementById('action-buttons').style.display = '';
     document.getElementById('row-count').textContent = state.mergedRows.length + ' rows';
+    renderActionPlan();
   }
 
   const parts = [];
@@ -3781,6 +3851,160 @@ function exportSellerCSV(rows) {
 
   downloadCSV(csvRows.join('\n'), 'veeqo-seller-breakdown');
   showNotification('Seller CSV exported (' + rows.length + ' rows). Attach to Intercom message.', 'success');
+}
+
+/* ===== Action Plan Panel (Requirement 32) ===== */
+
+function renderActionPlan() {
+  const panel = document.getElementById('action-plan');
+  const rows = state.mergedRows;
+  if (!rows || rows.length === 0) { panel.style.display = 'none'; return; }
+
+  panel.style.display = '';
+  const sellerName = state.seller.companyName || 'Seller';
+
+  // Categorise
+  const credits = rows.filter(r => r.chargebackAmount !== 'N/A' && r.chargebackAmount < 0);
+  const disputable = rows.filter(r => (r.disputeStrength === 'Strong' || r.disputeStrength === 'Moderate') && (r.chargebackAmount === 'N/A' || r.chargebackAmount > 0));
+  const notDisputable = rows.filter(r => r.disputeStrength === 'Weak' && (r.chargebackAmount === 'N/A' || r.chargebackAmount >= 0));
+  const incomplete = rows.filter(r => r.status === 'Incomplete');
+  const disputableTotal = disputable.reduce((s, r) => s + (r.chargebackAmount !== 'N/A' ? Math.max(0, r.chargebackAmount) : 0), 0);
+  const creditTotal = credits.reduce((s, r) => s + Math.abs(r.chargebackAmount), 0);
+
+  // Carrier breakdown for disputable
+  const carrierGroups = {};
+  disputable.forEach(r => {
+    const c = r.carrier || 'UNKNOWN';
+    if (!carrierGroups[c]) carrierGroups[c] = { rows: [], total: 0, amazon: 0, offAmazon: 0 };
+    carrierGroups[c].rows.push(r);
+    carrierGroups[c].total += (r.chargebackAmount !== 'N/A' ? Math.max(0, r.chargebackAmount) : 0);
+    if (r.orderId && r.orderId !== 'Off-Amazon' && r.orderId !== '' && r.orderId !== 'N/A') {
+      carrierGroups[c].amazon++;
+    } else {
+      carrierGroups[c].offAmazon++;
+    }
+  });
+
+  // Warnings
+  const warnings = [];
+  const dhlRows = disputable.filter(r => r.carrier === 'DHL');
+  const ontracRows = disputable.filter(r => r.carrier === 'ONTRAC');
+  const multiShipOrders = rows.filter(r => r._isMultiShip);
+  const scanErrors = rows.filter(r => r.disputeInsights && r.disputeInsights.some(i => i.includes('scanning error')));
+  const othersCharges = rows.filter(r => r.disputeInsights && r.disputeInsights.some(i => i.includes('Unspecified charge')));
+  const rateReclass = rows.filter(r => r._isRateReclassification);
+
+  if (dhlRows.length > 0) warnings.push('⚠️ DHL claim window is 30 days — ' + dhlRows.length + ' DHL shipments may be close to expiry');
+  if (ontracRows.length > 0) warnings.push('⚠️ OnTrac claim window is 15 days — check dates immediately');
+  if (multiShipOrders.length > 0) warnings.push('⚠️ ' + new Set(multiShipOrders.map(r => r.orderId)).size + ' orders have multiple shipments — review before SPLAT submission');
+  if (scanErrors.length > 0) warnings.push('⚠️ ' + scanErrors.length + ' shipments show possible scanning errors (>50% dimension difference)');
+  if (othersCharges.length > 0) warnings.push('⚠️ ' + othersCharges.length + ' shipments have unspecified "Others" charges — request breakdown from carrier');
+
+  // Dim weight and rate reclass counts for seller section
+  const dimWeightRows = notDisputable.filter(r => r.disputeInsights && r.disputeInsights.some(i => i.includes('dimensional weight')));
+
+  // Build HTML
+  let html = '<div class="ap-header">';
+  html += '<h3>Action Plan — ' + rows.length + ' shipments reviewed for ' + sellerName + '</h3>';
+  html += '<button class="ap-toggle" id="ap-toggle-btn">Collapse</button>';
+  html += '</div>';
+  html += '<div class="ap-body" id="ap-body">';
+
+  // Section 1: Summary
+  html += '<div class="ap-section"><div class="ap-section-title">Summary at a glance</div>';
+  html += '<div class="ap-summary-grid">';
+  html += '<div class="ap-stat ap-stat-dispute">' + disputable.length + ' disputable ($' + disputableTotal.toFixed(2) + ')</div>';
+  html += '<div class="ap-stat ap-stat-nodispute">' + notDisputable.length + ' not disputable</div>';
+  if (credits.length > 0) html += '<div class="ap-stat ap-stat-credit">' + credits.length + ' credits ($' + creditTotal.toFixed(2) + ')</div>';
+  if (incomplete.length > 0) html += '<div class="ap-stat ap-stat-incomplete">' + incomplete.length + ' incomplete (no carrier data)</div>';
+  html += '</div></div>';
+
+  // Section 2: Actions by carrier
+  if (disputable.length > 0) {
+    html += '<div class="ap-section"><div class="ap-section-title">Actions by carrier</div>';
+    Object.keys(carrierGroups).forEach(carrier => {
+      const g = carrierGroups[carrier];
+      html += '<div class="ap-carrier-block">';
+      html += '<div class="ap-carrier-title">' + carrier + ' (' + g.rows.length + ' shipments, $' + g.total.toFixed(2) + ')</div>';
+
+      if (carrier === 'FEDEX') {
+        html += '<div class="ap-carrier-action">→ Email quickresponse15@fedex.com with ' + g.rows.length + ' disputable trackings</div>';
+        html += '<div class="ap-carrier-action"><button class="ap-btn" onclick="document.getElementById(\'send-fedex-email-btn\').click()">Send FedEx Email</button> <button class="ap-btn" onclick="document.getElementById(\'export-dispute-csv-btn\').click()">Export FedEx Dispute CSV</button></div>';
+      } else {
+        html += '<div class="ap-carrier-action">→ Raise T.Corp for ' + g.rows.length + ' disputable trackings</div>';
+        html += '<div class="ap-btn" onclick="document.getElementById(\'create-dispute-tcorp-btn\').click()">Create Dispute T.Corp</button> <button class="ap-btn" onclick="document.getElementById(\'export-dispute-csv-btn\').click()">Export Dispute CSV</button></div>';
+      }
+
+      if (g.amazon > 0 || g.offAmazon > 0) {
+        html += '<div class="ap-carrier-note">' + g.amazon + ' Amazon orders (SPLAT after approval), ' + g.offAmazon + ' off-Amazon</div>';
+      }
+      html += '</div>';
+    });
+    html += '</div>';
+  } else {
+    html += '<div class="ap-section"><div class="ap-section-title">Result</div>';
+    html += '<p>No disputable shipments found. All charges appear correctly applied. Generate a seller reply explaining why.</p>';
+    html += '<button class="ap-btn ap-btn-primary" onclick="document.getElementById(\'generate-reply-btn\').click()">Generate Seller Reply</button>';
+    html += '</div>';
+  }
+
+  // Section 3: What to tell the seller
+  html += '<div class="ap-section"><div class="ap-section-title">What to tell the seller</div>';
+  html += '<div style="margin-bottom:8px;">';
+  if (disputable.length > 0) html += '• We are disputing ' + disputable.length + ' shipments totalling $' + disputableTotal.toFixed(2) + '<br>';
+  if (notDisputable.length > 0) html += '• ' + notDisputable.length + ' shipments were correctly charged<br>';
+  if (dimWeightRows.length > 0) html += '• ' + dimWeightRows.length + ' shipments affected by dimensional weight<br>';
+  if (rateReclass.length > 0) html += '• ' + rateReclass.length + ' shipments had rate reclassifications<br>';
+  if (credits.length > 0) html += '• ' + credits.length + ' credits in their favour ($' + creditTotal.toFixed(2) + ')<br>';
+  html += '</div>';
+  html += '<button class="ap-btn ap-btn-primary" onclick="document.getElementById(\'generate-reply-btn\').click()">Generate Seller Reply</button> ';
+  html += '<button class="ap-btn" onclick="document.getElementById(\'export-seller-csv-btn\').click()">Export Seller CSV</button>';
+  html += '</div>';
+
+  // Section 4: Warnings
+  if (warnings.length > 0) {
+    html += '<div class="ap-section"><div class="ap-section-title">Warnings</div>';
+    warnings.forEach(w => { html += '<div class="ap-warning">' + w + '</div>'; });
+    html += '</div>';
+  }
+
+  // Section 5: After dispute approved (collapsed)
+  html += '<div class="ap-section">';
+  html += '<div class="ap-after-toggle" id="ap-after-toggle">▶ After dispute is approved</div>';
+  html += '<div class="ap-after-section" id="ap-after-content" style="display:none;margin-top:8px;">';
+  html += '• Amazon orders → Create SPLAT T.Corp <button class="ap-btn" onclick="document.getElementById(\'create-splat-tcorp-btn\').click()">SPLAT T.Corp</button><br>';
+  html += '• Off-Amazon orders (seller has Amazon channel) → Submit SPLAT directly<br>';
+  html += '• Off-Amazon orders (no Amazon channel) → Offer Veeqo Credits, Stripe refund as last resort';
+  html += '</div></div>';
+
+  html += '</div>'; // end ap-body
+  panel.innerHTML = html;
+
+  // Wire toggle
+  document.getElementById('ap-toggle-btn').addEventListener('click', function() {
+    const body = document.getElementById('ap-body');
+    const btn = document.getElementById('ap-toggle-btn');
+    if (body.style.display === 'none') {
+      body.style.display = '';
+      btn.textContent = 'Collapse';
+    } else {
+      body.style.display = 'none';
+      btn.textContent = 'Expand';
+    }
+  });
+
+  // Wire after-approval toggle
+  document.getElementById('ap-after-toggle').addEventListener('click', function() {
+    const content = document.getElementById('ap-after-content');
+    const toggle = document.getElementById('ap-after-toggle');
+    if (content.style.display === 'none') {
+      content.style.display = '';
+      toggle.textContent = '▼ After dispute is approved';
+    } else {
+      content.style.display = 'none';
+      toggle.textContent = '▶ After dispute is approved';
+    }
+  });
 }
 
 /* ===== Combined Flow UI (Requirement 27) ===== */
