@@ -11,7 +11,8 @@
     "https://datanet-service.amazon.com/*",
     "https://datanet-jobrun-results-bucket-prod.s3-us-west-2.amazonaws.com/*",
     "https://midway-auth.amazon.com/*",
-    "https://na.turing.sfs.amazon.dev/*"
+    "https://na.turing.sfs.amazon.dev/*",
+    "https://veeqo.metabaseapp.com/*"
   ],
   "background": {
     "service_worker": "background.js"

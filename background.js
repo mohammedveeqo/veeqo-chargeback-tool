@@ -2,8 +2,35 @@ chrome.action.onClicked.addListener(() => {
   chrome.tabs.create({ url: "popup.html" });
 });
 
-// Proxy fetch requests to datanet-service.amazon.com to avoid CORS issues
+// Proxy fetch requests to avoid CORS issues
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg.type === 'metabaseFetch') {
+    const { url, method, body } = msg;
+    // Get Metabase session cookie
+    chrome.cookies.get({ url: 'https://veeqo.metabaseapp.com', name: 'metabase.SESSION' }, (cookie) => {
+      const sessionToken = cookie ? cookie.value : null;
+      if (!sessionToken) {
+        sendResponse({ ok: false, status: 401, body: 'Not logged into Metabase. Please log in at veeqo.metabaseapp.com first.' });
+        return;
+      }
+      const headers = {
+        'X-Metabase-Session': sessionToken,
+        'Content-Type': 'application/json'
+      };
+      fetch(url, {
+        method: method || 'GET',
+        headers,
+        body: body || undefined
+      })
+        .then(async (res) => {
+          const text = await res.text();
+          sendResponse({ ok: res.ok, status: res.status, body: text });
+        })
+        .catch((err) => sendResponse({ ok: false, status: 0, body: err.message }));
+    });
+    return true;
+  }
+
   if (msg.type === 'turingFetch') {
     const { trackingNumber } = msg;
     chrome.cookies.getAll({ domain: '.midway-auth.amazon.com' }, (cookies) => {

@@ -24,28 +24,49 @@
     <span><strong>Marketplace:</strong> <span id="seller-marketplace">...</span></span>
   </section>
 
-  <!-- File Upload Areas -->
-  <section id="upload-section">
-    <div class="upload-area" id="task-engine-upload">
-      <label>Upload Task Engine Export</label>
-      <input type="file" id="task-engine-file" accept=".csv,.xlsx" aria-label="Upload Task Engine Export">
-      <p class="upload-hint">Click or drag file here (.csv, .xlsx)</p>
+  <!-- Single Input Flow -->
+  <section id="combined-flow">
+    <div class="flow-input-box">
+      <textarea id="order-tracking-input" placeholder="Paste order numbers or tracking numbers (one per line, comma, or space separated)" aria-label="Order numbers or tracking numbers" rows="4"></textarea>
+      <div class="flow-input-controls">
+        <input type="text" id="metabase-company-id" placeholder="Company ID" aria-label="Company ID">
+        <button id="fetch-all-btn" class="btn-primary">Fetch &amp; Analyse</button>
+      </div>
+    </div>
+
+    <!-- Progress Panel (hidden until fetch starts) -->
+    <div id="flow-progress" class="flow-progress" style="display:none;">
+      <div id="flow-progress-steps"></div>
+      <div id="flow-progress-summary" class="flow-progress-summary"></div>
+    </div>
+
+    <!-- Fallback options (collapsed) -->
+    <details class="manual-fallback-section">
+      <summary>Manual options</summary>
+      <div class="manual-fallback-grid">
+        <div class="manual-option">
+          <label>Upload Task Engine CSV</label>
+          <input type="file" id="task-engine-file" accept=".csv,.xlsx">
+        </div>
+        <div class="manual-option">
+          <label>Upload Datanet CSV</label>
+          <input type="file" id="datanet-file" accept=".csv,.xlsx">
+        </div>
+        <div class="manual-option">
+          <button id="copy-datanet-sql-btn" style="display:none;">Copy Datanet SQL</button>
+          <button id="fetch-datanet-btn" style="display:none;">Fetch Datanet Only</button>
+        </div>
+      </div>
       <p class="upload-filename" id="task-engine-filename"></p>
       <p class="upload-error" id="task-engine-error"></p>
-    </div>
-    <div class="upload-area" id="datanet-upload">
-      <label>Datanet Export</label>
-      <button id="fetch-datanet-btn" class="fetch-datanet-btn" aria-label="Fetch Datanet Data">Fetch Datanet Data</button>
-      <p id="datanet-status" class="datanet-status"></p>
-      <details class="manual-upload-fallback">
-        <summary>Or upload manually</summary>
-        <button id="copy-datanet-sql-btn" style="display: none; margin-bottom: 6px;">Copy Datanet SQL</button>
-        <input type="file" id="datanet-file" accept=".csv,.xlsx" aria-label="Upload Datanet Export">
-        <p class="upload-hint">Click or drag file here (.csv, .xlsx)</p>
-      </details>
       <p class="upload-filename" id="datanet-filename"></p>
       <p class="upload-error" id="datanet-error"></p>
-    </div>
+      <p id="datanet-status" class="datanet-status"></p>
+    </details>
+
+    <!-- Error display -->
+    <p class="upload-error" id="seller-data-error"></p>
+    <p class="upload-filename" id="seller-data-filename"></p>
   </section>
 
   <!-- Turing Quick Lookup -->
@@ -65,11 +86,27 @@
 
   <!-- Action Buttons Bar (hidden until merge completes) -->
   <section id="action-buttons" style="display: none;">
-    <button id="send-fedex-email-btn">Send FedEx Email</button>
-    <button id="create-dispute-tcorp-btn">Create Dispute T.Corp</button>
-    <button id="create-splat-tcorp-btn">Create SPLAT T.Corp</button>
-    <button id="export-dispute-csv-btn">Export Dispute CSV</button>
-    <button id="export-splat-csv-btn">Export SPLAT CSV</button>
+    <div class="action-group">
+      <span class="action-group-label">Seller Reply</span>
+      <button id="generate-reply-btn" class="btn-action btn-primary-action">Generate Reply</button>
+      <button id="export-seller-csv-btn" class="btn-action">Export Breakdown CSV</button>
+      <button id="copy-for-ai-btn" class="btn-action">Copy for AI</button>
+    </div>
+    <div class="action-group">
+      <span class="action-group-label">Dispute</span>
+      <button id="send-fedex-email-btn" class="btn-action">FedEx Email</button>
+      <button id="create-dispute-tcorp-btn" class="btn-action">Dispute T.Corp</button>
+      <button id="export-dispute-csv-btn" class="btn-action">Dispute CSV</button>
+    </div>
+    <div class="action-group">
+      <span class="action-group-label">SPLAT</span>
+      <button id="create-splat-tcorp-btn" class="btn-action">SPLAT T.Corp</button>
+      <button id="export-splat-csv-btn" class="btn-action">SPLAT CSV</button>
+    </div>
+    <div class="action-group">
+      <span class="action-group-label">Analysis</span>
+      <button id="generate-summary-btn" class="btn-action">Full Summary</button>
+    </div>
   </section>
 
   <!-- Tab Bar -->

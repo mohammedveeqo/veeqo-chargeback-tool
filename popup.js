@@ -18,11 +18,24 @@ const state = {
     disputeStrength: 'All',
     status: 'All',
     chargebackAmount: 'All',
-    surchargeFlags: 'All'
-  }
+    surchargeFlags: 'All',
+    multiShip: 'All'
+  },
+  _trackingToOrderMap: new Map() // Requirement 28: Metabase order ID backfill
 };
 
 let saveAgentNameTimer = null;
+let _datanetFetchInProgress = false;
+
+/* ===== Order ID Mapping (Requirement 28) ===== */
+function updateTrackingToOrderMap(rows) {
+  if (!rows) return;
+  rows.forEach(r => {
+    if (r.trackingNumber && r.orderId && r.orderId !== '' && r.orderId !== 'N/A') {
+      state._trackingToOrderMap.set(r.trackingNumber, r.orderId);
+    }
+  });
+}
 
 /* ===== Surcharge Threshold Constants ===== */
 const SURCHARGE_THRESHOLDS = {
@@ -479,6 +492,7 @@ function handleFileUpload(file, type) {
       filenameEl.textContent = file.name + ' (' + deduped.length + ' rows)';
       if (isTaskEngine) {
         state.taskEngineRows = deduped;
+        updateTrackingToOrderMap(deduped);
         document.getElementById('copy-datanet-sql-btn').style.display = '';
       } else {
         state.datanetRows = deduped;
@@ -492,6 +506,7 @@ function handleFileUpload(file, type) {
 }
 
 function tryAutoMerge() {
+  if (_datanetFetchInProgress) return;
   if (!state.taskEngineRows || !state.datanetRows) return;
 
   // Calculate match percentage
@@ -551,7 +566,30 @@ function performMerge() {
 
     const merged = mergeData(state.taskEngineRows, state.datanetRows);
     merged.forEach(calculateFields);
+
+    // Requirement 28: Backfill missing order IDs from Metabase mapping
+    if (state._trackingToOrderMap.size > 0) {
+      merged.forEach(row => {
+        if ((!row.orderId || row.orderId === '' || row.orderId === 'N/A') && state._trackingToOrderMap.has(row.trackingNumber)) {
+          row.orderId = state._trackingToOrderMap.get(row.trackingNumber);
+        }
+      });
+    }
+
     state.mergedRows = merged;
+
+    // Requirement 28b: Flag multi-ship orders (same order ID on multiple rows)
+    const orderIdCounts = new Map();
+    merged.forEach(row => {
+      if (row.orderId && row.orderId !== '' && row.orderId !== 'N/A') {
+        orderIdCounts.set(row.orderId, (orderIdCounts.get(row.orderId) || 0) + 1);
+      }
+    });
+    merged.forEach(row => {
+      const count = orderIdCounts.get(row.orderId) || 0;
+      row._isMultiShip = count > 1;
+      row._multiShipCount = count;
+    });
 
     // Find the carrier tab with the highest row count (only on first merge)
     var carrierTabs = ['FEDEX', 'UPS', 'USPS', 'DHL', 'ONTRAC'];
@@ -582,6 +620,11 @@ function performMerge() {
     const matchedCount = merged.filter(r => r.shipmentId !== 'N/A' && r.carrierAuditedTotal !== 'N/A').length;
     const unmatchedCount = merged.length - matchedCount;
     showNotification('Merged: ' + matchedCount + ' matched, ' + unmatchedCount + ' unmatched out of ' + merged.length + ' total.', 'success');
+
+    // Update combined flow step 3
+    const strongCount = merged.filter(r => r.disputeStrength === 'Strong').length;
+    const moderateCount = merged.filter(r => r.disputeStrength === 'Moderate').length;
+    const weakCount = merged.filter(r => r.disputeStrength === 'Weak').length;
   } catch (e) {
     showNotification('An error occurred during merge. Please check your files.', 'error');
   }
@@ -590,37 +633,36 @@ function performMerge() {
 function setupUploadHandlers() {
   const teFile = document.getElementById('task-engine-file');
   const dnFile = document.getElementById('datanet-file');
-  const teArea = document.getElementById('task-engine-upload');
-  const dnArea = document.getElementById('datanet-upload');
+  const step2Upload = document.querySelector('.step2-upload');
 
-  // Click anywhere on the box to open file picker
-  teArea.addEventListener('click', () => teFile.click());
-  dnArea.addEventListener('click', (e) => {
-    // Don't open file picker when clicking the fetch button, status, or details/summary
-    if (e.target.closest('#fetch-datanet-btn, .datanet-status, .manual-upload-fallback')) return;
-    dnFile.click();
-  });
-
+  // Task engine file (now inside a details/fallback section)
   teFile.addEventListener('change', (e) => {
-    if (e.target.files.length > 0) handleFileUpload(e.target.files[0], 'task-engine');
+    if (e.target.files.length > 0) {
+      handleFileUpload(e.target.files[0], 'task-engine');
+      // Also store tracking numbers for Datanet SQL
+      setTimeout(() => {
+        if (state.taskEngineRows && state.taskEngineRows.length > 0) {
+          const tns = state.taskEngineRows.map(r => r.trackingNumber).filter(Boolean);
+          state._metabaseTrackingNumbers = tns;
+          document.getElementById('copy-datanet-sql-btn').style.display = '';
+        }
+      }, 500);
+    }
   });
+
+  // Step 2 upload area click
+  if (step2Upload) {
+    step2Upload.addEventListener('click', () => dnFile.click());
+    step2Upload.addEventListener('dragover', (e) => { e.preventDefault(); step2Upload.style.borderColor = '#0066ff'; });
+    step2Upload.addEventListener('dragleave', () => { step2Upload.style.borderColor = '#dee2e6'; });
+    step2Upload.addEventListener('drop', (e) => {
+      e.preventDefault(); step2Upload.style.borderColor = '#dee2e6';
+      if (e.dataTransfer.files.length > 0) handleFileUpload(e.dataTransfer.files[0], 'datanet');
+    });
+  }
+
   dnFile.addEventListener('change', (e) => {
     if (e.target.files.length > 0) handleFileUpload(e.target.files[0], 'datanet');
-  });
-
-  // Drag and drop
-  teArea.addEventListener('dragover', (e) => { e.preventDefault(); teArea.classList.add('dragover'); });
-  teArea.addEventListener('dragleave', () => { teArea.classList.remove('dragover'); });
-  teArea.addEventListener('drop', (e) => {
-    e.preventDefault(); teArea.classList.remove('dragover');
-    if (e.dataTransfer.files.length > 0) handleFileUpload(e.dataTransfer.files[0], 'task-engine');
-  });
-
-  dnArea.addEventListener('dragover', (e) => { e.preventDefault(); dnArea.classList.add('dragover'); });
-  dnArea.addEventListener('dragleave', () => { dnArea.classList.remove('dragover'); });
-  dnArea.addEventListener('drop', (e) => {
-    e.preventDefault(); dnArea.classList.remove('dragover');
-    if (e.dataTransfer.files.length > 0) handleFileUpload(e.dataTransfer.files[0], 'datanet');
   });
 }
 
@@ -1040,6 +1082,85 @@ function calculateFields(row) {
     row.disputeInsights.push('This package exceeded FedEx One Rate limits and was re-rated at standard commercial rates. If the seller entered dimensions within One Rate limits but the carrier audited higher, check for the known Veeqo bug (T.Corp D378661796) where Veeqo shows One Rate for ineligible packages.');
   }
 
+  // Rule 29.1: UPS/FedEx rounding rule
+  if (sellerDimsSorted && carrierDimsSorted && (row.carrier === 'FEDEX' || row.carrier === 'UPS')) {
+    var sellerRaw = [row.sellerLength, row.sellerWidth, row.sellerHeight];
+    var carrierRaw = [row.carrierAuditedLength, row.carrierAuditedWidth, row.carrierAuditedHeight];
+    for (var ri = 0; ri < 3; ri++) {
+      if (sellerRaw[ri] !== 'N/A' && carrierRaw[ri] !== 'N/A') {
+        var diff29 = carrierRaw[ri] - sellerRaw[ri];
+        if (diff29 > 0 && diff29 <= 1 && sellerRaw[ri] % 1 !== 0) {
+          row.disputeInsights.push('Carrier likely rounded up from ' + sellerRaw[ri] + '" to ' + carrierRaw[ri] + '". Carriers round every fraction of an inch up to the next whole inch. Dispute unlikely to succeed on this dimension alone.');
+          break;
+        }
+      }
+    }
+  }
+
+  // Rule 29.2: Borderline threshold detection
+  if (sellerDimsSorted) {
+    var thresholds29 = SURCHARGE_THRESHOLDS[(row.carrier || '').toUpperCase()];
+    if (thresholds29) {
+      Object.keys(thresholds29).forEach(function(tk) {
+        var t = thresholds29[tk];
+        if (t.longestSide && sellerDimsSorted[0] >= t.longestSide - 2 && sellerDimsSorted[0] < t.longestSide) {
+          row.disputeInsights.push('Package is close to ' + tk.replace(/_/g, ' ') + ' threshold (longest side ' + sellerDimsSorted[0] + '" vs ' + t.longestSide + '" limit). Carrier rounding or slight bulging during transit could push it over. Higher risk of surcharge.');
+        }
+        if (t.cubicVolume && sellerCubicVolume !== 'N/A' && sellerCubicVolume >= t.cubicVolume * 0.95 && sellerCubicVolume < t.cubicVolume) {
+          row.disputeInsights.push('Package is close to ' + tk.replace(/_/g, ' ') + ' cubic threshold (' + Math.round(sellerCubicVolume) + ' vs ' + t.cubicVolume + ' limit). Higher risk of surcharge.');
+        }
+      });
+    }
+  }
+
+  // Rule 29.3: Dimensional weight explanation
+  if (row.sellerDimWeight !== 'N/A' && row.sellerWeight !== 'N/A' && row.sellerDimWeight > row.sellerWeight) {
+    var divisor29 = getDimDivisor(row.carrier);
+    row.disputeInsights.push('The billable weight of ' + row.sellerBillableWeight + ' lbs is the dimensional weight (' + row.sellerLength + ' x ' + row.sellerWidth + ' x ' + row.sellerHeight + ' / ' + divisor29 + '), not the actual weight. The seller entered ' + row.sellerWeight + ' lbs but the carrier bills at ' + Math.round(row.sellerDimWeight * 100) / 100 + ' lbs because it is higher. This is standard carrier practice, not an error.');
+  }
+
+  // Rule 29.4: $0.00 chargeback with surcharge flags
+  if (row.chargebackAmount !== 'N/A' && row.chargebackAmount === 0 && row.surchargeFlags.length > 0) {
+    row.disputeInsights.push('Chargeback shows $0.00 but surcharges are flagged. The surcharges may have been included in the original label price at purchase. Check the seller\'s billing records to confirm the actual amount charged vs what they expected to pay.');
+  }
+
+  // Rule 29.5: DHL/OnTrac urgency
+  if (row.carrier === 'DHL') {
+    row.disputeInsights.unshift('⚠️ DHL claim window is 30 days only. Check label purchase date and act urgently.');
+  }
+  if (row.carrier === 'ONTRAC') {
+    row.disputeInsights.unshift('⚠️ OnTrac claim window is 15 days. Verify label date immediately.');
+  }
+
+  // Rule 29.6: "Others" charge flag
+  if (row.chargeBreakdown && row.chargeBreakdown !== 'N/A') {
+    var bd = row.chargeBreakdown.toLowerCase();
+    if (bd.includes('other') || bd.includes('unspecified') || bd.includes('misc')) {
+      row.disputeInsights.push('Unspecified charge detected (\'Others\'). Request a specific breakdown from the carrier — this charge has not been explained and the seller is entitled to know what it is.');
+    }
+  }
+
+  // Rule 29.7: Scanning error detection (>50% difference on any dimension)
+  if (sellerDimsSorted && carrierDimsSorted) {
+    var dimLabels = ['length', 'width', 'height'];
+    var sellerRaw29 = [row.sellerLength, row.sellerWidth, row.sellerHeight];
+    var carrierRaw29 = [row.carrierAuditedLength, row.carrierAuditedWidth, row.carrierAuditedHeight];
+    for (var si = 0; si < 3; si++) {
+      if (sellerRaw29[si] !== 'N/A' && carrierRaw29[si] !== 'N/A' && sellerRaw29[si] > 0) {
+        var pctDiff = ((carrierRaw29[si] - sellerRaw29[si]) / sellerRaw29[si]) * 100;
+        if (pctDiff > 50) {
+          row.disputeInsights.push('Carrier audited ' + dimLabels[si] + ' is ' + Math.round(pctDiff) + '% larger than seller declared (' + carrierRaw29[si] + '" vs ' + sellerRaw29[si] + '"). This exceeds normal rounding and may indicate a scanning error. Strong basis for dispute with photo evidence.');
+          break;
+        }
+      }
+    }
+  }
+
+  // Rule 29.8: Photo evidence alternatives
+  if ((row.disputeStrength === 'Strong' || row.disputeStrength === 'Moderate') && row.disputeInsights.some(function(i) { return i.includes('evidence') || i.includes('photo'); })) {
+    row.disputeInsights.push('If the seller cannot provide photos (package already shipped), acceptable alternatives include: a third-party weigh receipt, product spec sheet with dimensions, or manufacturer listing confirming size/weight.');
+  }
+
   // --- Dispute Strength (priority-ordered: Weak → Moderate → Strong → default Moderate) ---
   var allDimsWithin1 = dimDiffs ? dimDiffs.every(function(d) { return d <= 1; }) : false;
   var billableWeightDiff = (row.sellerBillableWeight !== 'N/A' && row.carrierBillableWeight !== 'N/A')
@@ -1053,12 +1174,14 @@ function calculateFields(row) {
 
   row.disputeStrength = 'Moderate'; // default
 
+  // ABSOLUTE RULE: Negative or zero chargeback = Weak, always (Req 30 fix)
+  if (chargebackNum !== null && chargebackNum <= 0) {
+    row.disputeStrength = 'Weak';
+  }
   // WEAK conditions (check first, first match wins)
-  if (row.status === 'Match' && !hasCarrierOnlyFlag) {
+  else if (row.status === 'Match' && !hasCarrierOnlyFlag) {
     row.disputeStrength = 'Weak';
   } else if (row.surchargeFlags.some(function(f) { return f.name === 'Over Max'; })) {
-    row.disputeStrength = 'Weak';
-  } else if (chargebackNum !== null && chargebackNum <= 0) {
     row.disputeStrength = 'Weak';
   } else if (sameFlagsTriggered && allDimsWithin1) {
     row.disputeStrength = 'Weak';
@@ -1162,6 +1285,10 @@ function applyDropdownFilters(rows) {
       if (f.surchargeFlags === 'Has flags' && !hasFlags) return false;
       if (f.surchargeFlags === 'No flags' && hasFlags) return false;
     }
+    if (f.multiShip !== 'All') {
+      if (f.multiShip === 'Multi-ship only' && !r._isMultiShip) return false;
+      if (f.multiShip === 'Single only' && r._isMultiShip) return false;
+    }
     return true;
   });
 }
@@ -1213,6 +1340,7 @@ function renderFilterBar() {
   bar.appendChild(makeFilter('Status:', 'status', ['All', 'Match', 'Mismatch', 'Incomplete']));
   bar.appendChild(makeFilter('Chargeback:', 'chargebackAmount', ['All', 'Over $50', 'Over $100', 'Over $500', 'Under $1']));
   bar.appendChild(makeFilter('Flags:', 'surchargeFlags', ['All', 'Has flags', 'No flags']));
+  bar.appendChild(makeFilter('Multi-ship:', 'multiShip', ['All', 'Multi-ship only', 'Single only']));
 
   var clearLink = document.createElement('a');
   clearLink.href = '#';
@@ -1224,6 +1352,7 @@ function renderFilterBar() {
     state.filters.status = 'All';
     state.filters.chargebackAmount = 'All';
     state.filters.surchargeFlags = 'All';
+    state.filters.multiShip = 'All';
     renderFilterBar();
     refreshTableWithFilters();
   });
@@ -1576,6 +1705,23 @@ function renderDisputeStrengthSummary(rows) {
 
   var tableContainer = document.getElementById('table-container');
   tableContainer.parentNode.insertBefore(bar, tableContainer);
+
+  // Requirement 29.5: DHL/OnTrac urgency banner
+  var urgencyBanner = document.getElementById('urgency-banner');
+  if (urgencyBanner) urgencyBanner.remove();
+  if (state.activeTab === 'DHL') {
+    urgencyBanner = document.createElement('div');
+    urgencyBanner.id = 'urgency-banner';
+    urgencyBanner.style.cssText = 'padding:10px 16px;background:#fff3e0;border:2px solid #ff6d00;border-radius:6px;margin-bottom:8px;font-size:13px;font-weight:600;color:#e65100;';
+    urgencyBanner.textContent = '⚠️ DHL claim window is 30 days only. Check label purchase date and act urgently.';
+    tableContainer.parentNode.insertBefore(urgencyBanner, tableContainer);
+  } else if (state.activeTab === 'OnTrac') {
+    urgencyBanner = document.createElement('div');
+    urgencyBanner.id = 'urgency-banner';
+    urgencyBanner.style.cssText = 'padding:10px 16px;background:#ffebee;border:2px solid #d32f2f;border-radius:6px;margin-bottom:8px;font-size:13px;font-weight:600;color:#c62828;';
+    urgencyBanner.textContent = '⚠️ OnTrac claim window is 15 days. Verify label date immediately.';
+    tableContainer.parentNode.insertBefore(urgencyBanner, tableContainer);
+  }
 }
 
 function buildInsightText(row) {
@@ -1833,6 +1979,17 @@ function renderTable(rows) {
             }
             td.appendChild(span);
           });
+        }
+      }
+      // Multi-ship badge on Order ID column
+      else if (col.key === 'orderId') {
+        td.textContent = (val !== undefined && val !== null) ? val : '';
+        if (row._isMultiShip) {
+          var msBadge = document.createElement('span');
+          msBadge.className = 'badge-multiship';
+          msBadge.textContent = 'Multi-ship';
+          msBadge.title = 'This order has ' + row._multiShipCount + ' shipments — check if all need disputing';
+          td.appendChild(msBadge);
         }
       }
       else if (col.monetary) {
@@ -2211,12 +2368,41 @@ function exportDisputeCSV(rows, tabName) {
 function exportSplatCSV(rows) {
   const headers = ['MarketplaceId', 'MerchantId', 'ReferenceId', 'AccountType', 'Amount', 'Credit/Debit', 'OrderId'];
   const csvRows = [headers.join(',')];
+
+  // Requirement 28b: Consolidate multi-ship orders (SPLAT doesn't accept duplicate order IDs)
+  const orderGroups = new Map();
+  let multiShipCount = 0;
   rows.forEach(r => {
-    const amt = r.chargebackAmount === 'N/A' ? '' : Number(r.chargebackAmount).toFixed(2);
+    const oid = r.orderId || '';
+    if (oid && oid !== 'N/A' && orderGroups.has(oid)) {
+      // Consolidate: add amount to existing row
+      const existing = orderGroups.get(oid);
+      const existingAmt = existing.chargebackAmount === 'N/A' ? 0 : Number(existing.chargebackAmount);
+      const newAmt = r.chargebackAmount === 'N/A' ? 0 : Number(r.chargebackAmount);
+      existing._consolidatedAmount = (existing._consolidatedAmount || existingAmt) + newAmt;
+      existing._consolidatedTrackings = (existing._consolidatedTrackings || [existing.trackingNumber]);
+      existing._consolidatedTrackings.push(r.trackingNumber);
+      multiShipCount++;
+    } else {
+      orderGroups.set(oid || r.trackingNumber, { ...r });
+    }
+  });
+
+  if (multiShipCount > 0) {
+    showNotification(multiShipCount + ' orders have multiple shipments. SPLAT does not accept duplicate order IDs — totals have been consolidated per order.', 'error');
+  }
+
+  orderGroups.forEach(r => {
+    const amt = r._consolidatedAmount !== undefined
+      ? r._consolidatedAmount.toFixed(2)
+      : (r.chargebackAmount === 'N/A' ? '' : Number(r.chargebackAmount).toFixed(2));
+    const refId = r._consolidatedTrackings
+      ? r._consolidatedTrackings.join('; ')
+      : r.trackingNumber;
     const vals = [
       state.seller.marketplaceId || 'ATVPDKIKX0DER',
       state.seller.mcid || '',
-      r.trackingNumber,
+      refId,
       '',
       amt,
       'Credit',
@@ -2405,11 +2591,12 @@ function wireActionButtons() {
   // Copy Datanet SQL
   document.getElementById('copy-datanet-sql-btn').addEventListener('click', async () => {
     try {
-      if (!state.taskEngineRows || state.taskEngineRows.length === 0) {
-        showNotification('Upload a Task Engine export first.', 'error'); return;
+      // Use Metabase-fetched tracking numbers if available, otherwise fall back to task engine rows
+      let trackingNumbers = state._metabaseTrackingNumbers || [];
+      if (trackingNumbers.length === 0 && state.taskEngineRows && state.taskEngineRows.length > 0) {
+        trackingNumbers = state.taskEngineRows.map(r => r.trackingNumber).filter(tn => tn && tn.trim() !== '');
       }
-      const trackingNumbers = state.taskEngineRows.map(r => r.trackingNumber).filter(tn => tn && tn.trim() !== '');
-      if (trackingNumbers.length === 0) { showNotification('No tracking numbers found.', 'error'); return; }
+      if (trackingNumbers.length === 0) { showNotification('No tracking numbers found. Fetch seller data or upload a Task Engine export first.', 'error'); return; }
       const sql = generateDatanetSQL(trackingNumbers);
       await navigator.clipboard.writeText(sql);
       const savedUrl = (document.getElementById('datanet-profile-url').value || '').trim();
@@ -2420,6 +2607,46 @@ function wireActionButtons() {
         showNotification('SQL copied (' + trackingNumbers.length + ' tracking numbers). Save your Datanet profile URL to open it automatically.', 'success');
       }
     } catch (e) { showNotification('Could not copy SQL to clipboard.', 'error'); }
+  });
+
+  // Generate Seller Summary
+  document.getElementById('generate-summary-btn').addEventListener('click', async () => {
+    const rows = state.mergedRows;
+    if (!rows || rows.length === 0) { showNotification('No data to summarise.', 'error'); return; }
+    const summary = generateSellerSummary(rows);
+    try {
+      await navigator.clipboard.writeText(summary);
+      showNotification('Seller summary copied to clipboard (' + rows.length + ' shipments).', 'success');
+    } catch (e) { showNotification('Could not copy to clipboard.', 'error'); }
+  });
+
+  // Copy for AI
+  document.getElementById('copy-for-ai-btn').addEventListener('click', async () => {
+    const rows = state.mergedRows;
+    if (!rows || rows.length === 0) { showNotification('No data to copy.', 'error'); return; }
+    const aiText = generateAIPrompt(rows);
+    try {
+      await navigator.clipboard.writeText(aiText);
+      showNotification('AI prompt copied (' + rows.length + ' shipments). Paste into Kiro or QuickSuite.', 'success');
+    } catch (e) { showNotification('Could not copy to clipboard.', 'error'); }
+  });
+
+  // Generate Seller Reply
+  document.getElementById('generate-reply-btn').addEventListener('click', async () => {
+    const rows = state.mergedRows;
+    if (!rows || rows.length === 0) { showNotification('No data to generate reply.', 'error'); return; }
+    const reply = generateSellerReply(rows);
+    try {
+      await navigator.clipboard.writeText(reply);
+      showNotification('Seller reply copied — paste into Intercom.', 'success');
+    } catch (e) { showNotification('Could not copy to clipboard.', 'error'); }
+  });
+
+  // Export Seller CSV
+  document.getElementById('export-seller-csv-btn').addEventListener('click', () => {
+    const rows = state.mergedRows;
+    if (!rows || rows.length === 0) { showNotification('No data to export.', 'error'); return; }
+    exportSellerCSV(rows);
   });
 }
 
@@ -2610,8 +2837,30 @@ async function turingQuickLookup() {
   }
 
   // Refresh table
-  if (state.taskEngineRows && added > 0) {
+  if (state.taskEngineRows && added > 0 && !_datanetFetchInProgress) {
     tryAutoMerge();
+  } else if (added > 0 && _datanetFetchInProgress) {
+    // Datanet fetch in progress — add Turing rows directly to mergedRows for display
+    // They'll be reconciled when the Datanet fetch completes and triggers a full merge
+    for (let i = 0; i < trackingNumbers.length; i++) {
+      const existing = state.mergedRows.find(r => r.trackingNumber === trackingNumbers[i]);
+      if (existing) continue;
+      const dnRow = (state.datanetRows || []).find(r => r.trackingNumber === trackingNumbers[i]);
+      if (!dnRow) continue;
+      const row = {
+        ...dnRow,
+        carrier: dnRow._carrier || 'N/A',
+        orderId: dnRow._orderId || '',
+        serviceName: dnRow._serviceId || '',
+        orderNumber: dnRow._orderId || ''
+      };
+      calculateFields(row);
+      state.mergedRows.push(row);
+    }
+    renderTable(filterByTab(state.mergedRows, state.activeTab));
+    updateTabCounts(state.mergedRows);
+    document.getElementById('action-buttons').style.display = '';
+    document.getElementById('row-count').textContent = state.mergedRows.length + ' rows';
   } else if (added > 0) {
     renderTable(filterByTab(state.mergedRows, state.activeTab));
     updateTabCounts(state.mergedRows);
@@ -2740,8 +2989,8 @@ async function fetchDatanetData() {
   filenameEl.textContent = '';
 
   // Validate prerequisites
-  if (!state.taskEngineRows || state.taskEngineRows.length === 0) {
-    errorEl.textContent = 'Upload a Task Engine export first.';
+  if ((!state.taskEngineRows || state.taskEngineRows.length === 0) && (!state._metabaseTrackingNumbers || state._metabaseTrackingNumbers.length === 0)) {
+    errorEl.textContent = 'Fetch seller data or upload a Task Engine export first.';
     return;
   }
 
@@ -2760,6 +3009,7 @@ async function fetchDatanetData() {
   btn.disabled = true;
   btn.textContent = 'Working...';
   statusEl.textContent = 'Checking Midway auth...';
+  _datanetFetchInProgress = true;
 
   try {
     // 0. Check Midway auth first
@@ -2782,8 +3032,10 @@ async function fetchDatanetData() {
     const jobId = urlJobId || String(jobIds[0]);
 
     // 2. Generate and update SQL
-    const trackingNumbers = state.taskEngineRows.map(r => r.trackingNumber).filter(tn => tn && tn.trim());
-    if (trackingNumbers.length === 0) throw new Error('No tracking numbers found in Task Engine data.');
+    let trackingNumbers = (state._metabaseTrackingNumbers && state._metabaseTrackingNumbers.length > 0)
+      ? state._metabaseTrackingNumbers
+      : state.taskEngineRows.map(r => r.trackingNumber).filter(tn => tn && tn.trim());
+    if (trackingNumbers.length === 0) throw new Error('No tracking numbers found. Fetch seller data or upload a Task Engine export first.');
 
     statusEl.textContent = 'Updating profile SQL (' + trackingNumbers.length + ' tracking numbers)...';
     const newSQL = generateDatanetSQL(trackingNumbers);
@@ -2807,7 +3059,7 @@ async function fetchDatanetData() {
       throw new Error('Query returned no results. Check that the tracking numbers exist in the invoice data.');
     }
 
-    // 6. Map and load into state
+    // 6. Map and load into state — merge with any existing Turing rows
     const mapped = rows.map(mapDatanetRow);
     const seen = new Set();
     const deduped = mapped.filter(r => {
@@ -2816,11 +3068,14 @@ async function fetchDatanetData() {
       return true;
     });
 
-    state.datanetRows = deduped;
-    filenameEl.textContent = 'Datanet API (' + deduped.length + ' rows)';
-    statusEl.textContent = 'Done — ' + deduped.length + ' rows loaded';
+    // Preserve any Turing-added rows that aren't in the Datanet results
+    const existingTuringRows = (state.datanetRows || []).filter(r => !seen.has(r.trackingNumber));
+    state.datanetRows = deduped.concat(existingTuringRows);
+    filenameEl.textContent = 'Datanet API (' + deduped.length + ' rows' + (existingTuringRows.length > 0 ? ' + ' + existingTuringRows.length + ' from Turing' : '') + ')';
+    statusEl.textContent = 'Done — ' + state.datanetRows.length + ' rows loaded';
     btn.textContent = 'Fetched';
 
+    _datanetFetchInProgress = false;
     tryAutoMerge();
 
   } catch (err) {
@@ -2832,8 +3087,1058 @@ async function fetchDatanetData() {
     statusEl.textContent = '';
     btn.textContent = 'Fetch Datanet Data';
   } finally {
+    _datanetFetchInProgress = false;
     btn.disabled = false;
     if (btn.textContent === 'Working...') btn.textContent = 'Fetch Datanet Data';
+  }
+}
+
+/* ===== Metabase API Integration (Requirement 26) ===== */
+
+const METABASE_URL = 'https://veeqo.metabaseapp.com';
+let _metabaseDatabaseId = null;
+
+function loadMetabaseApiKey() {
+  const fallback = localStorage.getItem('metabaseApiKey') || '';
+  const input = document.getElementById('metabase-api-key');
+  if (isChromeAvailable()) {
+    try {
+      chrome.storage.local.get('metabaseApiKey', (result) => {
+        const key = (result && result.metabaseApiKey) || fallback;
+        if (input) input.value = key;
+      });
+    } catch (e) {
+      if (input) input.value = fallback;
+    }
+  } else {
+    if (input) input.value = fallback;
+  }
+}
+
+function saveMetabaseApiKey(key) {
+  localStorage.setItem('metabaseApiKey', key);
+  if (isChromeAvailable()) {
+    try {
+      chrome.storage.local.set({ metabaseApiKey: key });
+    } catch (e) {}
+  }
+}
+
+function getMetabaseApiKey() {
+  return (document.getElementById('metabase-api-key').value || '').trim();
+}
+
+async function metabaseQuery(sql, databaseId) {
+  const dbId = databaseId || _metabaseDatabaseId;
+  if (!dbId) throw new Error('Metabase database ID not found. Try refreshing.');
+
+  const response = await new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage({
+      type: 'metabaseFetch',
+      url: METABASE_URL + '/api/dataset',
+      method: 'POST',
+      body: JSON.stringify({
+        database: dbId,
+        type: 'native',
+        native: { query: sql }
+      })
+    }, (res) => {
+      if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
+      resolve(res);
+    });
+  });
+
+  if (!response || !response.ok) {
+    const body = response ? response.body : '';
+    if (response && response.status === 401) throw new Error('Not logged into Metabase. Please log in at veeqo.metabaseapp.com first.');
+    throw new Error('Metabase query failed (' + (response ? response.status : '?') + '): ' + (body || 'unknown error').slice(0, 200));
+  }
+
+  const data = JSON.parse(response.body);
+  if (data.error) throw new Error('Metabase error: ' + data.error);
+
+  // Parse results into array of objects
+  const cols = (data.data && data.data.cols) ? data.data.cols.map(c => c.name) : [];
+  const rows = (data.data && data.data.rows) ? data.data.rows : [];
+  return rows.map(row => {
+    const obj = {};
+    cols.forEach((col, i) => { obj[col] = row[i]; });
+    return obj;
+  });
+}
+
+async function fetchMetabaseDatabaseId() {
+  try {
+    const response = await new Promise((resolve, reject) => {
+      chrome.runtime.sendMessage({
+        type: 'metabaseFetch',
+        url: METABASE_URL + '/api/database',
+        method: 'GET'
+      }, (res) => {
+        if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
+        resolve(res);
+      });
+    });
+    if (!response || !response.ok) return;
+    const data = JSON.parse(response.body);
+    const dbs = data.data || data;
+    // Find Snowflake database
+    const snowflake = (Array.isArray(dbs) ? dbs : []).find(db =>
+      db.engine === 'snowflake' || (db.name || '').toLowerCase().includes('snowflake')
+    );
+    if (snowflake) {
+      _metabaseDatabaseId = snowflake.id;
+    } else if (Array.isArray(dbs) && dbs.length > 0) {
+      _metabaseDatabaseId = dbs[0].id;
+    }
+  } catch (e) {
+    // Silently fail — will error when query is attempted
+  }
+}
+
+function detectInputType(text) {
+  const lines = text.split(/[\n,]+/).map(s => s.trim()).filter(Boolean);
+  const orderPattern = /^\d{3}-\d{7}-\d{7}$/;
+  const orders = lines.filter(l => orderPattern.test(l));
+  if (orders.length > lines.length * 0.5) {
+    return { type: 'orders', values: lines };
+  }
+  return { type: 'tracking', values: lines };
+}
+
+function sqlInList(values, isText) {
+  return values.map(v => "'" + String(v).replace(/'/g, "''") + "'").join(',');
+}
+
+function batchArray(arr, size) {
+  const batches = [];
+  for (let i = 0; i < arr.length; i += size) {
+    batches.push(arr.slice(i, i + size));
+  }
+  return batches;
+}
+
+async function runBatchedQueries(batches, buildSQL, maxConcurrent) {
+  const results = [];
+  for (let i = 0; i < batches.length; i += maxConcurrent) {
+    const chunk = batches.slice(i, i + maxConcurrent);
+    const promises = chunk.map(batch => metabaseQuery(buildSQL(batch)));
+    const chunkResults = await Promise.all(promises);
+    chunkResults.forEach(rows => results.push(...rows));
+  }
+  return results;
+}
+
+function updateMetabaseProgress(steps, activeIdx, summary) {
+  const panel = document.getElementById('flow-progress');
+  if (!panel) return;
+  panel.style.display = '';
+  let html = '';
+  steps.forEach((step, i) => {
+    let cls = '';
+    if (i < activeIdx) cls = 'done';
+    else if (i === activeIdx) cls = 'active';
+    if (step.error) cls = 'error';
+    const icon = i < activeIdx ? '✓' : (step.error ? '✗' : (i === activeIdx ? '⟳' : '○'));
+    const time = step.time ? step.time + 's' : '';
+    html += '<div class="step ' + cls + '">';
+    html += '<span class="step-label">' + icon + ' ' + step.label + '</span>';
+    html += '<span class="step-time">' + time + '</span>';
+    html += '</div>';
+  });
+  if (summary) {
+    html += '<div class="step-summary">' + summary + '</div>';
+  }
+  panel.innerHTML = html;
+}
+
+async function fetchSellerData() {
+  const errorEl = document.getElementById('seller-data-error');
+  const filenameEl = document.getElementById('seller-data-filename');
+  const btn = document.getElementById('fetch-seller-data-btn');
+  const input = document.getElementById('order-tracking-input');
+  const companyIdInput = document.getElementById('metabase-company-id');
+
+  errorEl.textContent = '';
+  filenameEl.textContent = '';
+
+  const raw = (input.value || '').trim();
+  if (!raw) {
+    errorEl.textContent = 'Paste order numbers or tracking numbers first.';
+    return;
+  }
+
+  const companyId = (companyIdInput.value || '').trim();
+  if (!companyId) {
+    errorEl.textContent = 'Company ID is required. Log into Veeqo or enter it manually.';
+    return;
+  }
+
+  // Ensure database ID is loaded
+  if (!_metabaseDatabaseId) {
+    await fetchMetabaseDatabaseId();
+    if (!_metabaseDatabaseId) {
+      errorEl.textContent = 'Could not determine Metabase database. Check your API key.';
+      return;
+    }
+  }
+
+  const { type, values } = detectInputType(raw);
+  btn.disabled = true;
+  btn.textContent = 'Working...';
+
+  const steps = [];
+  const startTime = Date.now();
+
+  try {
+    let orderIds = [];
+    let orderNumberMap = new Map(); // ORDER_ID -> order NUMBER
+
+    if (type === 'orders') {
+      // Step 1: Pull company orders
+      steps.push({ label: 'Loading order map...' });
+      updateMetabaseProgress(steps, 0);
+      const t1 = Date.now();
+
+      // Query directly for the specific order numbers instead of pulling all orders
+      const orderBatches = batchArray(values, 50);
+      let orderRows = [];
+      for (const batch of orderBatches) {
+        const inList = batch.map(v => "'" + String(v).replace(/'/g, "''") + "'").join(',');
+        const batchRows = await metabaseQuery(
+          "SELECT ID, NUMBER FROM BASE_VEEQO_APP.ORDERS WHERE COMPANY_ID = " + companyId +
+          " AND NUMBER IN (" + inList + ")"
+        );
+        orderRows = orderRows.concat(batchRows);
+      }
+      steps[0].time = Math.round((Date.now() - t1) / 1000);
+
+      // Step 2: Client-side match
+      steps.push({ label: 'Matching order numbers...' });
+      updateMetabaseProgress(steps, 1);
+
+      const orderLookup = new Map();
+      orderRows.forEach(r => {
+        const num = String(r.NUMBER || '').trim();
+        orderLookup.set(num, r.ID);
+        // Also index without leading # or whitespace
+        if (num.startsWith('#')) orderLookup.set(num.slice(1), r.ID);
+      });
+
+      const matched = [];
+      const notFound = [];
+      values.forEach(orderNum => {
+        const cleaned = orderNum.trim();
+        let id = orderLookup.get(cleaned);
+        // Try without leading # 
+        if (id === undefined && cleaned.startsWith('#')) {
+          id = orderLookup.get(cleaned.slice(1));
+        }
+        // Try with leading #
+        if (id === undefined) {
+          id = orderLookup.get('#' + cleaned);
+        }
+        if (id !== undefined) {
+          matched.push({ id: id, number: cleaned });
+          orderNumberMap.set(id, cleaned);
+        } else {
+          notFound.push(cleaned);
+        }
+      });
+
+      if (matched.length === 0) {
+        // Show sample of what Metabase returned for debugging
+        const sampleNums = orderRows.slice(0, 3).map(r => String(r.NUMBER)).join(', ');
+        throw new Error('No matching orders found. The order numbers in Metabase look like: ' + sampleNums + '. You entered: ' + values.slice(0, 3).join(', '));
+      }
+
+      steps[1].label = 'Matched ' + matched.length + ' of ' + values.length + ' order numbers';
+      steps[1].time = 0;
+
+      if (notFound.length > 0) {
+        const preview = notFound.slice(0, 5).join(', ');
+        showNotification(notFound.length + ' order numbers not found: ' + preview + (notFound.length > 5 ? '...' : ''), 'error');
+      }
+
+      orderIds = matched.map(m => m.id);
+      updateMetabaseProgress(steps, 1);
+    }
+
+    // Step 3: Fetch shipment details
+    steps.push({ label: 'Fetching shipment details...' });
+    updateMetabaseProgress(steps, steps.length - 1);
+    const t3 = Date.now();
+
+    let shipmentRows;
+    if (type === 'orders') {
+      const batches = batchArray(orderIds, 50);
+      shipmentRows = await runBatchedQueries(batches, (batch) =>
+        "SELECT ORDER_ID, CONSIGNMENT AS TRACKING_NUMBER, CARRIER_NAME, " +
+        "PARCELBRIGHT_SHIPMENT_ID AS SHIPMENT_ID, ALLOCATION_ID, CREATED_AT::DATE AS SHIP_DATE " +
+        "FROM INT.ORDER_SHIPMENT_DETAILS WHERE COMPANY_ID = " + companyId +
+        " AND LABEL_CONTENT_TYPE IS NOT NULL AND ORDER_ID IN (" + batch.join(',') + ")"
+      , 5);
+    } else {
+      // Tracking number path
+      const batches = batchArray(values, 50);
+      shipmentRows = await runBatchedQueries(batches, (batch) =>
+        "SELECT ORDER_ID, CONSIGNMENT AS TRACKING_NUMBER, CARRIER_NAME, " +
+        "PARCELBRIGHT_SHIPMENT_ID AS SHIPMENT_ID, ALLOCATION_ID, CREATED_AT::DATE AS SHIP_DATE " +
+        "FROM INT.ORDER_SHIPMENT_DETAILS WHERE COMPANY_ID = " + companyId +
+        " AND LABEL_CONTENT_TYPE IS NOT NULL AND CONSIGNMENT IN (" + sqlInList(batch, true) + ")"
+      , 5);
+    }
+    steps[steps.length - 1].time = Math.round((Date.now() - t3) / 1000);
+
+    if (shipmentRows.length === 0) {
+      throw new Error('No shipments found. Check the company ID and order/tracking numbers.');
+    }
+
+    // Step 4: Fetch weight/dimensions
+    steps.push({ label: 'Fetching dimensions...' });
+    updateMetabaseProgress(steps, steps.length - 1);
+    const t4 = Date.now();
+
+    const allocationIds = [...new Set(shipmentRows.map(r => r.ALLOCATION_ID).filter(Boolean))];
+    let dimRows = [];
+    if (allocationIds.length > 0) {
+      const batches = batchArray(allocationIds, 50);
+      dimRows = await runBatchedQueries(batches, (batch) =>
+        "SELECT ALLOCATION_ID, WEIGHT, DEPTH AS LENGTH, WIDTH, HEIGHT, DIMENSIONS_UNIT, WEIGHT_UNIT " +
+        "FROM BASE_PENSIVE_VEEQO_APP_DB.PENSIVE_VQ_APP_ALLOCATION_PACKAGES WHERE COMPANY_ID = " + companyId +
+        " AND ALLOCATION_ID IN (" + batch.join(',') + ")"
+      , 5);
+    }
+    steps[steps.length - 1].time = Math.round((Date.now() - t4) / 1000);
+
+    // Step 5: Fetch carrier/service
+    steps.push({ label: 'Fetching carrier/service...' });
+    updateMetabaseProgress(steps, steps.length - 1);
+    const t5 = Date.now();
+
+    const trackingNumbers = [...new Set(shipmentRows.map(r => r.TRACKING_NUMBER).filter(Boolean))];
+    let carrierRows = [];
+    if (trackingNumbers.length > 0) {
+      const batches = batchArray(trackingNumbers, 50);
+      carrierRows = await runBatchedQueries(batches, (batch) =>
+        "SELECT TRACKING_NUMBER, SERVICE_CARRIER, SERVICE_NAME, REMOTE_SHIPMENT_ID " +
+        "FROM BASE_PENSIVE_VEEQO_APP_DB.PENSIVE_RATE_SHOPPING_SHIPMENTS WHERE COMPANY_ID = '" + companyId + "'" +
+        " AND TRACKING_NUMBER IN (" + sqlInList(batch, true) + ")"
+      , 5);
+    }
+    steps[steps.length - 1].time = Math.round((Date.now() - t5) / 1000);
+
+    // Step 6: Fetch base rate
+    steps.push({ label: 'Fetching rates...' });
+    updateMetabaseProgress(steps, steps.length - 1);
+    const t6 = Date.now();
+
+    const shipmentIds = [...new Set(shipmentRows.map(r => r.SHIPMENT_ID).filter(Boolean))];
+    let rateRows = [];
+    if (shipmentIds.length > 0) {
+      const batches = batchArray(shipmentIds, 50);
+      rateRows = await runBatchedQueries(batches, (batch) =>
+        "SELECT SHIPMENT_ID, BASE_RATE FROM INT.SHIPPING_CREDIT_SHIPMENTS WHERE SHIPMENT_ID IN (" + batch.map(id => "'" + String(id).replace(/'/g, "''") + "'").join(',') + ")"
+      , 5).catch(() => []);
+      // If quoted version fails, try unquoted (numeric IDs)
+      if (rateRows.length === 0 && shipmentIds.length > 0) {
+        try {
+          rateRows = await runBatchedQueries(batches, (batch) =>
+            "SELECT SHIPMENT_ID, BASE_RATE FROM INT.SHIPPING_CREDIT_SHIPMENTS WHERE SHIPMENT_ID IN (" + batch.join(',') + ")"
+          , 5);
+        } catch (e) {
+          // Rate lookup is non-critical — continue without it
+          rateRows = [];
+        }
+      }
+    }
+    steps[steps.length - 1].time = Math.round((Date.now() - t6) / 1000);
+
+    // Build lookup maps
+    const dimMap = new Map();
+    dimRows.forEach(r => { dimMap.set(r.ALLOCATION_ID, r); });
+
+    const carrierMap = new Map();
+    carrierRows.forEach(r => { carrierMap.set(r.TRACKING_NUMBER, r); });
+
+    const rateMap = new Map();
+    rateRows.forEach(r => { rateMap.set(String(r.SHIPMENT_ID), r); });
+
+    // Track multi-ship orders
+    const orderShipCount = new Map();
+    shipmentRows.forEach(r => {
+      orderShipCount.set(r.ORDER_ID, (orderShipCount.get(r.ORDER_ID) || 0) + 1);
+    });
+
+    // Combine into Task Engine format
+    const taskEngineRows = shipmentRows.map(row => {
+      const dim = dimMap.get(row.ALLOCATION_ID) || {};
+      const carrier = carrierMap.get(row.TRACKING_NUMBER) || {};
+      const rate = rateMap.get(String(row.SHIPMENT_ID)) || {};
+
+      // Weight conversion: grams to lbs
+      let weightLbs = 0;
+      if (dim.WEIGHT) {
+        const unit = (dim.WEIGHT_UNIT || '').toLowerCase();
+        if (unit === 'g' || unit === 'grams') {
+          weightLbs = Math.round((dim.WEIGHT / 453.592) * 100) / 100;
+        } else if (unit === 'kg') {
+          weightLbs = Math.round((dim.WEIGHT * 2.20462) * 100) / 100;
+        } else if (unit === 'oz') {
+          weightLbs = Math.round((dim.WEIGHT / 16) * 100) / 100;
+        } else if (unit === 'lb' || unit === 'lbs') {
+          weightLbs = dim.WEIGHT;
+        } else {
+          // Default assume grams
+          weightLbs = Math.round((dim.WEIGHT / 453.592) * 100) / 100;
+        }
+      }
+
+      // Dimension conversion if needed
+      let length = dim.LENGTH || 0;
+      let width = dim.WIDTH || 0;
+      let height = dim.HEIGHT || 0;
+      const dimUnit = (dim.DIMENSIONS_UNIT || '').toLowerCase();
+      if (dimUnit === 'cm') {
+        length = Math.round(length / 2.54 * 100) / 100;
+        width = Math.round(width / 2.54 * 100) / 100;
+        height = Math.round(height / 2.54 * 100) / 100;
+      }
+
+      const orderNum = orderNumberMap.get(row.ORDER_ID) || String(row.ORDER_ID || '');
+
+      return {
+        trackingNumber: String(row.TRACKING_NUMBER || ''),
+        shipmentId: String(row.SHIPMENT_ID || ''),
+        orderId: orderNum,
+        sellerWeight: weightLbs,
+        sellerLength: length,
+        sellerWidth: width,
+        sellerHeight: height,
+        carrier: (carrier.SERVICE_CARRIER || row.CARRIER_NAME || '').toUpperCase(),
+        serviceName: String(carrier.SERVICE_NAME || ''),
+        sellerBaseRate: rate.BASE_RATE || 0,
+        shipDate: String(row.SHIP_DATE || ''),
+        _multiShip: (orderShipCount.get(row.ORDER_ID) || 1) > 1
+      };
+    });
+
+    // Store in state
+    state.taskEngineRows = taskEngineRows;
+    updateTrackingToOrderMap(taskEngineRows);
+
+    const totalTime = Math.round((Date.now() - startTime) / 1000);
+    const summary = 'Done — ' + (type === 'orders' ? values.length + ' orders, ' : '') + shipmentRows.length + ' shipments found (' + totalTime + 's)';
+    updateMetabaseProgress(steps, steps.length, summary);
+
+    filenameEl.textContent = 'Metabase (' + taskEngineRows.length + ' rows)';
+    btn.textContent = 'Fetched';
+
+    // Show copy Datanet SQL button with the tracking numbers
+    const allTrackingNums = taskEngineRows.map(r => r.trackingNumber).filter(Boolean);
+    document.getElementById('copy-datanet-sql-btn').style.display = '';
+    // Store tracking numbers for Datanet SQL
+    state._metabaseTrackingNumbers = allTrackingNums;
+
+    // Auto-merge if Datanet data is already loaded
+    tryAutoMerge();
+
+  } catch (err) {
+    const lastStep = steps[steps.length - 1];
+    if (lastStep) lastStep.error = true;
+    updateMetabaseProgress(steps, steps.length - 1);
+    errorEl.textContent = err.message;
+    btn.textContent = 'Fetch Seller Data';
+  } finally {
+    btn.disabled = false;
+    if (btn.textContent === 'Working...') btn.textContent = 'Fetch Seller Data';
+  }
+}
+
+/* ===== Seller Summary Generator (Requirement 30) ===== */
+
+function generateSellerSummary(rows) {
+  const companyName = state.seller.companyName || 'Seller';
+  const carriers = [...new Set(rows.map(r => r.carrier).filter(c => c && c !== 'N/A'))];
+  const dates = rows.map(r => r.shipDate || r.invoiceDate).filter(d => d && d !== 'N/A').sort();
+  const dateRange = dates.length > 0 ? dates[0] + ' to ' + dates[dates.length - 1] : 'N/A';
+
+  // Categorise rows — credits first (negative amounts never disputable)
+  const credits = rows.filter(r => r.chargebackAmount !== 'N/A' && r.chargebackAmount < 0);
+  const disputable = rows.filter(r => (r.disputeStrength === 'Strong' || r.disputeStrength === 'Moderate') && (r.chargebackAmount === 'N/A' || r.chargebackAmount > 0));
+  const notDisputable = rows.filter(r => r.disputeStrength === 'Weak' && (r.chargebackAmount === 'N/A' || r.chargebackAmount >= 0));
+
+  const disputableTotal = disputable.reduce((s, r) => s + (r.chargebackAmount !== 'N/A' ? Math.max(0, r.chargebackAmount) : 0), 0);
+
+  // Sub-categorise disputable
+  const weightDisc = disputable.filter(r => r.weightMatch === 'No');
+  const dimDisc = disputable.filter(r => r.dimsMatch === 'No' && r.weightMatch !== 'No');
+  const scanError = disputable.filter(r => r.disputeInsights && r.disputeInsights.some(i => i.includes('scanning error')));
+
+  // Sub-categorise not disputable
+  const matches = notDisputable.filter(r => r.status === 'Match');
+  const dimWeightRows = notDisputable.filter(r => r.disputeInsights && r.disputeInsights.some(i => i.includes('dimensional weight')));
+  const roundingRows = notDisputable.filter(r => r.disputeInsights && r.disputeInsights.some(i => i.includes('rounded up')));
+  const sharedSurcharge = notDisputable.filter(r => r.surchargeFlags && r.surchargeFlags.length > 0 && !r.surchargeFlags.some(f => f.carrierOnly));
+
+  const creditTotal = credits.reduce((s, r) => s + Math.abs(r.chargebackAmount), 0);
+
+  let text = 'CHARGEBACK INVESTIGATION SUMMARY\n';
+  text += 'Seller: ' + companyName + '\n';
+  text += 'Total shipments reviewed: ' + rows.length + '\n';
+  text += 'Date range: ' + dateRange + '\n\n';
+
+  text += 'DISPUTABLE (' + disputable.length + ' shipments, $' + disputableTotal.toFixed(2) + ' total):\n';
+  text += 'These shipments show a discrepancy between your entered dimensions and what the carrier recorded. We will raise these with ' + carriers.join('/') + ' on your behalf.\n';
+  if (weightDisc.length > 0) text += '- ' + weightDisc.length + ' shipments: weight discrepancy\n';
+  if (dimDisc.length > 0) text += '- ' + dimDisc.length + ' shipments: dimension discrepancy (carrier measured larger than entered)\n';
+  if (scanError.length > 0) text += '- ' + scanError.length + ' shipments: possible scanning error (carrier dimensions significantly different)\n';
+  text += '\n';
+
+  text += 'NOT DISPUTABLE (' + notDisputable.length + ' shipments):\n';
+  text += 'These shipments were correctly charged based on the package details entered.\n';
+  if (matches.length > 0) text += '- ' + matches.length + ' shipments: dimensions and weight match carrier records ($0.00 difference)\n';
+  if (dimWeightRows.length > 0) text += '- ' + dimWeightRows.length + ' shipments: dimensional weight applies (standard carrier practice — carriers bill the greater of actual or dimensional weight)\n';
+  if (sharedSurcharge.length > 0) text += '- ' + sharedSurcharge.length + ' shipments: surcharges apply regardless (both your entered dimensions and the carrier\'s measurements trigger surcharges)\n';
+  if (roundingRows.length > 0) text += '- ' + roundingRows.length + ' shipments: carrier rounded up by 1 inch (within normal rounding rules)\n';
+  text += '\n';
+
+  if (credits.length > 0) {
+    text += 'CREDITS IN YOUR FAVOUR (' + credits.length + ' shipments, $' + creditTotal.toFixed(2) + ' total):\n';
+    text += 'These shipments were actually charged less than your label cost — no action needed.\n\n';
+  }
+
+  text += 'NEXT STEPS:\n';
+  if (carriers.includes('FEDEX')) {
+    text += 'We are submitting a dispute to FedEx for the ' + disputable.length + ' disputable shipments.\n';
+  } else {
+    text += 'We are raising this with ' + carriers.join('/') + ' for the ' + disputable.length + ' disputable shipments.\n';
+  }
+  text += 'We will update you once we hear back. Please note the final decision lies with the carrier.\n';
+
+  return text;
+}
+
+function generateAIPrompt(rows) {
+  const companyName = state.seller.companyName || 'Seller';
+  const carriers = [...new Set(rows.map(r => r.carrier).filter(c => c && c !== 'N/A'))];
+
+  // Separate credits first (negative chargeback), then strong (positive chargeback + Strong/Moderate), then weak
+  const credits = rows.filter(r => r.chargebackAmount !== 'N/A' && r.chargebackAmount < 0);
+  const strong = rows.filter(r => (r.disputeStrength === 'Strong' || r.disputeStrength === 'Moderate') && (r.chargebackAmount === 'N/A' || r.chargebackAmount > 0));
+  const weak = rows.filter(r => r.disputeStrength === 'Weak' && (r.chargebackAmount === 'N/A' || r.chargebackAmount >= 0));
+
+  let text = 'Generate a seller reply for a chargeback investigation. Here are the results:\n\n';
+  text += 'Seller: ' + companyName + ', Carrier: ' + carriers.join('/') + ', Total: ' + rows.length + ' shipments\n\n';
+
+  // Strong disputes — full detail, no truncation
+  text += 'Strong disputes (proceed with dispute): ' + strong.length + ' shipments\n';
+  strong.forEach(r => {
+    const sDims = r.sellerLength + 'x' + r.sellerWidth + 'x' + r.sellerHeight;
+    const cDims = r.carrierAuditedLength + 'x' + r.carrierAuditedWidth + 'x' + r.carrierAuditedHeight;
+    const amt = r.chargebackAmount !== 'N/A' ? '$' + Number(r.chargebackAmount).toFixed(2) : 'N/A';
+    const reason = r.disputeInsights && r.disputeInsights.length > 0 ? r.disputeInsights.join(' | ') : '';
+    text += r.trackingNumber + ', ' + sDims + ', ' + cDims + ', ' + amt + ', ' + reason + '\n';
+  });
+
+  // Weak/no dispute — grouped by reason
+  text += '\nWeak/no dispute: ' + weak.length + ' shipments\n';
+  const weakGroups = new Map();
+  weak.forEach(r => {
+    const reason = r.status === 'Match' ? 'Dimensions and weight match carrier records'
+      : (r.disputeInsights && r.disputeInsights.length > 0 ? r.disputeInsights[0] : 'No dispute basis');
+    const amt = r.chargebackAmount !== 'N/A' ? '$' + Number(r.chargebackAmount).toFixed(2) : '$0.00';
+    const key = reason + '|' + amt;
+    if (!weakGroups.has(key)) {
+      weakGroups.set(key, { reason, amt, count: 0, trackings: [] });
+    }
+    const g = weakGroups.get(key);
+    g.count++;
+    g.trackings.push(r.trackingNumber);
+  });
+  weakGroups.forEach(g => {
+    if (g.count > 3) {
+      text += g.count + ' shipments: ' + g.reason + ', ' + g.amt + '\n';
+    } else {
+      g.trackings.forEach(tn => {
+        text += tn + ', ' + g.reason + ', ' + g.amt + '\n';
+      });
+    }
+  });
+
+  // Credits — no truncation
+  if (credits.length > 0) {
+    text += '\nCredits (no action): ' + credits.length + ' shipments\n';
+    credits.forEach(r => {
+      text += r.trackingNumber + ', $' + Math.abs(r.chargebackAmount).toFixed(2) + ' credit\n';
+    });
+  }
+
+  text += '\nWrite a clear, empathetic reply explaining which shipments we can dispute and why the others are not eligible. Explain dimensional weight simply if it applies.\n';
+
+  return text;
+}
+
+function generateSellerReply(rows) {
+  const sellerName = state.seller.companyName || 'there';
+  const agentName = state.agentName || 'Your Agent';
+  const carriers = [...new Set(rows.map(r => r.carrier).filter(c => c && c !== 'N/A'))];
+  const carrierStr = carriers.join('/');
+
+  const credits = rows.filter(r => r.chargebackAmount !== 'N/A' && r.chargebackAmount < 0);
+  const disputable = rows.filter(r => (r.disputeStrength === 'Strong' || r.disputeStrength === 'Moderate') && (r.chargebackAmount === 'N/A' || r.chargebackAmount > 0));
+  const notDisputable = rows.filter(r => r.disputeStrength === 'Weak' && (r.chargebackAmount === 'N/A' || r.chargebackAmount >= 0));
+
+  const disputableTotal = disputable.reduce((s, r) => s + (r.chargebackAmount !== 'N/A' ? Math.max(0, r.chargebackAmount) : 0), 0);
+  const creditTotal = credits.reduce((s, r) => s + Math.abs(r.chargebackAmount), 0);
+
+  // Sub-categorise not disputable
+  const matchRows = notDisputable.filter(r => r.status === 'Match');
+  const dimWeightRows = notDisputable.filter(r => r.disputeInsights && r.disputeInsights.some(i => i.includes('dimensional weight')));
+  const roundingRows = notDisputable.filter(r => r.disputeInsights && r.disputeInsights.some(i => i.includes('rounded up')));
+
+  let text = 'Hi ' + sellerName + ',\n\n';
+  text += 'Thank you for your patience while we reviewed your shipments.\n\n';
+  text += 'We have investigated ' + rows.length + ' shipments and here is a summary of our findings:\n\n';
+
+  if (disputable.length > 0) {
+    text += 'DISPUTABLE (' + disputable.length + ' shipments, $' + disputableTotal.toFixed(2) + ' total):\n';
+    text += 'We have identified ' + disputable.length + ' shipments where the carrier\'s recorded dimensions or weight do not match what was entered at label purchase. We will be raising these with ' + carrierStr + ' on your behalf. Please note the final decision lies with the carrier.\n\n';
+  }
+
+  if (notDisputable.length > 0) {
+    text += 'NOT DISPUTABLE (' + notDisputable.length + ' shipments):\n';
+    if (matchRows.length > 0) {
+      text += matchRows.length + ' shipments were correctly charged — the carrier\'s records match the details entered at label creation.\n';
+    }
+    if (dimWeightRows.length > 0) {
+      text += dimWeightRows.length + ' shipments are affected by dimensional weight — your package dimensions produce a billable weight higher than the actual weight, which is standard carrier practice.\n';
+    }
+    if (roundingRows.length > 0) {
+      text += roundingRows.length + ' shipments had charges within normal carrier rounding (fractions of an inch rounded up).\n';
+    }
+    var otherWeak = notDisputable.length - matchRows.length - dimWeightRows.length - roundingRows.length;
+    if (otherWeak > 0) {
+      text += otherWeak + ' shipments were correctly charged based on the package details.\n';
+    }
+    text += '\n';
+  }
+
+  if (credits.length > 0) {
+    text += 'CREDITS IN YOUR FAVOUR (' + credits.length + ' shipments, $' + creditTotal.toFixed(2) + '):\n';
+    text += credits.length + ' shipments were actually charged less than your original label cost — no action needed on these.\n\n';
+  }
+
+  text += 'We have attached a full breakdown of all shipments for your reference.\n\n';
+
+  if (disputable.length > 0) {
+    text += 'We will update you once we hear back from ' + carrierStr + ' on the disputable shipments.\n\n';
+  }
+
+  text += 'Kind regards,\n' + agentName + '\nVeeqo Support';
+
+  return text;
+}
+
+function getRowOutcome(row) {
+  const carrier = (row.carrier || 'carrier').toUpperCase();
+  if (row.chargebackAmount !== 'N/A' && row.chargebackAmount < 0) return 'Credit in your favour';
+  if ((row.disputeStrength === 'Strong' || row.disputeStrength === 'Moderate') && (row.chargebackAmount === 'N/A' || row.chargebackAmount > 0)) {
+    return 'Disputing with ' + carrier;
+  }
+  if (row.status === 'Match') return 'Correctly charged';
+  if (row.disputeInsights && row.disputeInsights.some(i => i.includes('dimensional weight'))) return 'Dimensional weight applies';
+  if (row.disputeInsights && row.disputeInsights.some(i => i.includes('rounded up'))) return 'Carrier rounding';
+  return 'Under review';
+}
+
+function exportSellerCSV(rows) {
+  const headers = ['Tracking Number', 'Order ID', 'Service', 'Your Dimensions (in)', 'Your Weight (lbs)', 'Carrier Dimensions (in)', 'Carrier Weight (lbs)', 'Chargeback Amount', 'Outcome'];
+  const csvRows = [headers.join(',')];
+
+  rows.forEach(r => {
+    const sellerDims = (r.sellerLength !== 'N/A' ? r.sellerLength + ' x ' + r.sellerWidth + ' x ' + r.sellerHeight : 'N/A');
+    const carrierDims = (r.carrierAuditedLength !== 'N/A' ? r.carrierAuditedLength + ' x ' + r.carrierAuditedWidth + ' x ' + r.carrierAuditedHeight : 'N/A');
+    const amt = r.chargebackAmount !== 'N/A' ? Number(r.chargebackAmount).toFixed(2) : '';
+    const outcome = getRowOutcome(r);
+
+    const vals = [
+      r.trackingNumber,
+      r.orderId || '',
+      r.serviceName || '',
+      sellerDims,
+      r.sellerWeight !== 'N/A' ? r.sellerWeight : '',
+      carrierDims,
+      r.carrierAuditedWeight !== 'N/A' ? r.carrierAuditedWeight : '',
+      amt,
+      outcome
+    ];
+    csvRows.push(vals.map(v => {
+      const s = String(v);
+      return (s.includes(',') || s.includes('"')) ? '"' + s.replace(/"/g, '""') + '"' : s;
+    }).join(','));
+  });
+
+  downloadCSV(csvRows.join('\n'), 'veeqo-seller-breakdown');
+  showNotification('Seller CSV exported (' + rows.length + ' rows). Attach to Intercom message.', 'success');
+}
+
+/* ===== Combined Flow UI (Requirement 27) ===== */
+
+function updateFlowProgress(steps, summary) {
+  const panel = document.getElementById('flow-progress');
+  const stepsEl = document.getElementById('flow-progress-steps');
+  const summaryEl = document.getElementById('flow-progress-summary');
+  panel.style.display = '';
+
+  stepsEl.innerHTML = steps.map(s => {
+    let cls = '';
+    let icon = '○';
+    if (s.status === 'done') { cls = 'done'; icon = '✓'; }
+    else if (s.status === 'active') { cls = 'active'; icon = '⟳'; }
+    else if (s.status === 'error') { cls = 'error'; icon = '✗'; }
+    else if (s.status === 'skip') { return ''; }
+    const time = s.time ? '<span class="fp-time">' + s.time + 's</span>' : '';
+    return '<div class="fp-step ' + cls + '">' + icon + ' ' + s.label + time + '</div>';
+  }).join('');
+
+  summaryEl.innerHTML = summary || '';
+}
+
+async function fetchAllFlow() {
+  const btn = document.getElementById('fetch-all-btn');
+  const errorEl = document.getElementById('seller-data-error');
+  const input = document.getElementById('order-tracking-input');
+  const companyIdInput = document.getElementById('metabase-company-id');
+
+  errorEl.textContent = '';
+
+  const raw = (input.value || '').trim();
+  if (!raw) { errorEl.textContent = 'Paste order numbers or tracking numbers first.'; return; }
+
+  const companyId = (companyIdInput.value || '').trim();
+  if (!companyId) { errorEl.textContent = 'Company ID is required.'; return; }
+
+  if (!_metabaseDatabaseId) {
+    await fetchMetabaseDatabaseId();
+    if (!_metabaseDatabaseId) { errorEl.textContent = 'Could not connect to Metabase. Check your API key.'; return; }
+  }
+
+  const { type, values } = detectInputType(raw);
+  btn.disabled = true;
+  btn.textContent = 'Working...';
+
+  const steps = [];
+  const startTime = Date.now();
+
+  try {
+    // === PHASE 1: Metabase (Seller Data) ===
+    let orderIds = [];
+    let orderNumberMap = new Map();
+
+    if (type === 'orders') {
+      steps.push({ label: 'Loading order map...', status: 'active' });
+      updateFlowProgress(steps);
+      const t1 = Date.now();
+
+      const orderBatches = batchArray(values, 50);
+      let orderRows = [];
+      for (const batch of orderBatches) {
+        const inList = batch.map(v => "'" + String(v).replace(/'/g, "''") + "'").join(',');
+        const batchRows = await metabaseQuery(
+          "SELECT ID, NUMBER FROM BASE_VEEQO_APP.ORDERS WHERE COMPANY_ID = " + companyId +
+          " AND NUMBER IN (" + inList + ")"
+        );
+        orderRows = orderRows.concat(batchRows);
+      }
+      steps[0].status = 'done';
+      steps[0].time = Math.round((Date.now() - t1) / 1000);
+
+      // Match
+      steps.push({ label: 'Matching order numbers...', status: 'active' });
+      updateFlowProgress(steps);
+
+      const orderLookup = new Map();
+      orderRows.forEach(r => {
+        const num = String(r.NUMBER || '').trim();
+        orderLookup.set(num, r.ID);
+        if (num.startsWith('#')) orderLookup.set(num.slice(1), r.ID);
+      });
+
+      const matched = [];
+      const notFound = [];
+      values.forEach(orderNum => {
+        const cleaned = orderNum.trim();
+        let id = orderLookup.get(cleaned);
+        if (id === undefined && cleaned.startsWith('#')) id = orderLookup.get(cleaned.slice(1));
+        if (id === undefined) id = orderLookup.get('#' + cleaned);
+        if (id !== undefined) {
+          matched.push({ id, number: cleaned });
+          orderNumberMap.set(id, cleaned);
+        } else {
+          notFound.push(cleaned);
+        }
+      });
+
+      if (matched.length === 0) {
+        const sampleNums = orderRows.slice(0, 3).map(r => String(r.NUMBER)).join(', ');
+        throw new Error('No matching orders found. Metabase has: ' + sampleNums + '. You entered: ' + values.slice(0, 3).join(', '));
+      }
+
+      steps[1].status = 'done';
+      steps[1].label = 'Matched ' + matched.length + ' of ' + values.length + ' orders';
+      updateFlowProgress(steps);
+
+      if (notFound.length > 0) {
+        showNotification(notFound.length + ' order numbers not found: ' + notFound.slice(0, 5).join(', '), 'error');
+      }
+
+      orderIds = matched.map(m => m.id);
+    }
+
+    // Shipment details
+    steps.push({ label: 'Fetching shipment details...', status: 'active' });
+    updateFlowProgress(steps);
+    const t3 = Date.now();
+
+    let shipmentRows;
+    if (type === 'orders') {
+      const batches = batchArray(orderIds, 50);
+      shipmentRows = await runBatchedQueries(batches, (batch) =>
+        "SELECT ORDER_ID, CONSIGNMENT AS TRACKING_NUMBER, CARRIER_NAME, " +
+        "PARCELBRIGHT_SHIPMENT_ID AS SHIPMENT_ID, ALLOCATION_ID, CREATED_AT::DATE AS SHIP_DATE " +
+        "FROM INT.ORDER_SHIPMENT_DETAILS WHERE COMPANY_ID = " + companyId +
+        " AND LABEL_CONTENT_TYPE IS NOT NULL AND ORDER_ID IN (" + batch.join(',') + ")"
+      , 5);
+    } else {
+      const batches = batchArray(values, 50);
+      shipmentRows = await runBatchedQueries(batches, (batch) =>
+        "SELECT ORDER_ID, CONSIGNMENT AS TRACKING_NUMBER, CARRIER_NAME, " +
+        "PARCELBRIGHT_SHIPMENT_ID AS SHIPMENT_ID, ALLOCATION_ID, CREATED_AT::DATE AS SHIP_DATE " +
+        "FROM INT.ORDER_SHIPMENT_DETAILS WHERE COMPANY_ID = " + companyId +
+        " AND LABEL_CONTENT_TYPE IS NOT NULL AND CONSIGNMENT IN (" + sqlInList(batch, true) + ")"
+      , 5);
+    }
+    steps[steps.length - 1].status = 'done';
+    steps[steps.length - 1].time = Math.round((Date.now() - t3) / 1000);
+    steps[steps.length - 1].label = 'Fetched ' + shipmentRows.length + ' shipments';
+
+    if (shipmentRows.length === 0) throw new Error('No shipments found for this company/input.');
+
+    // Dimensions
+    steps.push({ label: 'Fetching dimensions...', status: 'active' });
+    updateFlowProgress(steps);
+    const t4 = Date.now();
+    const allocationIds = [...new Set(shipmentRows.map(r => r.ALLOCATION_ID).filter(Boolean))];
+    let dimRows = [];
+    if (allocationIds.length > 0) {
+      const batches = batchArray(allocationIds, 50);
+      dimRows = await runBatchedQueries(batches, (batch) =>
+        "SELECT ALLOCATION_ID, WEIGHT, DEPTH AS LENGTH, WIDTH, HEIGHT, DIMENSIONS_UNIT, WEIGHT_UNIT " +
+        "FROM BASE_PENSIVE_VEEQO_APP_DB.PENSIVE_VQ_APP_ALLOCATION_PACKAGES WHERE COMPANY_ID = " + companyId +
+        " AND ALLOCATION_ID IN (" + batch.join(',') + ")"
+      , 5);
+    }
+    steps[steps.length - 1].status = 'done';
+    steps[steps.length - 1].time = Math.round((Date.now() - t4) / 1000);
+
+    // Carrier/service
+    steps.push({ label: 'Fetching carrier/service...', status: 'active' });
+    updateFlowProgress(steps);
+    const t5 = Date.now();
+    const trackingNumbers = [...new Set(shipmentRows.map(r => r.TRACKING_NUMBER).filter(Boolean))];
+    let carrierRows = [];
+    if (trackingNumbers.length > 0) {
+      const batches = batchArray(trackingNumbers, 50);
+      carrierRows = await runBatchedQueries(batches, (batch) =>
+        "SELECT TRACKING_NUMBER, SERVICE_CARRIER, SERVICE_NAME, REMOTE_SHIPMENT_ID " +
+        "FROM BASE_PENSIVE_VEEQO_APP_DB.PENSIVE_RATE_SHOPPING_SHIPMENTS WHERE COMPANY_ID = '" + companyId + "'" +
+        " AND TRACKING_NUMBER IN (" + sqlInList(batch, true) + ")"
+      , 5);
+    }
+    steps[steps.length - 1].status = 'done';
+    steps[steps.length - 1].time = Math.round((Date.now() - t5) / 1000);
+
+    // Rates (non-blocking)
+    steps.push({ label: 'Fetching rates...', status: 'active' });
+    updateFlowProgress(steps);
+    const t6 = Date.now();
+    const shipmentIds = [...new Set(shipmentRows.map(r => r.SHIPMENT_ID).filter(Boolean))];
+    let rateRows = [];
+    if (shipmentIds.length > 0) {
+      try {
+        const batches = batchArray(shipmentIds, 50);
+        rateRows = await runBatchedQueries(batches, (batch) =>
+          "SELECT SHIPMENT_ID, BASE_RATE FROM INT.SHIPPING_CREDIT_SHIPMENTS WHERE SHIPMENT_ID IN (" + batch.join(',') + ")"
+        , 5);
+      } catch (e) { /* non-blocking */ }
+    }
+    steps[steps.length - 1].status = 'done';
+    steps[steps.length - 1].time = Math.round((Date.now() - t6) / 1000);
+
+    // Build lookup maps
+    const dimMap = new Map();
+    dimRows.forEach(r => { dimMap.set(r.ALLOCATION_ID, r); });
+    const carrierMap = new Map();
+    carrierRows.forEach(r => { carrierMap.set(r.TRACKING_NUMBER, r); });
+    const rateMap = new Map();
+    rateRows.forEach(r => { rateMap.set(String(r.SHIPMENT_ID), r); });
+
+    const orderShipCount = new Map();
+    shipmentRows.forEach(r => { orderShipCount.set(r.ORDER_ID, (orderShipCount.get(r.ORDER_ID) || 0) + 1); });
+
+    // Build task engine rows
+    const taskEngineRows = shipmentRows.map(row => {
+      const dim = dimMap.get(row.ALLOCATION_ID) || {};
+      const carrier = carrierMap.get(row.TRACKING_NUMBER) || {};
+      const rate = rateMap.get(String(row.SHIPMENT_ID)) || {};
+      let weightLbs = 0;
+      if (dim.WEIGHT) {
+        const unit = (dim.WEIGHT_UNIT || '').toLowerCase();
+        if (unit === 'g' || unit === 'grams') weightLbs = Math.round((dim.WEIGHT / 453.592) * 100) / 100;
+        else if (unit === 'kg') weightLbs = Math.round((dim.WEIGHT * 2.20462) * 100) / 100;
+        else if (unit === 'oz') weightLbs = Math.round((dim.WEIGHT / 16) * 100) / 100;
+        else if (unit === 'lb' || unit === 'lbs') weightLbs = dim.WEIGHT;
+        else weightLbs = Math.round((dim.WEIGHT / 453.592) * 100) / 100;
+      }
+      let length = dim.LENGTH || 0, width = dim.WIDTH || 0, height = dim.HEIGHT || 0;
+      if ((dim.DIMENSIONS_UNIT || '').toLowerCase() === 'cm') {
+        length = Math.round(length / 2.54 * 100) / 100;
+        width = Math.round(width / 2.54 * 100) / 100;
+        height = Math.round(height / 2.54 * 100) / 100;
+      }
+      return {
+        trackingNumber: String(row.TRACKING_NUMBER || ''),
+        shipmentId: String(row.SHIPMENT_ID || ''),
+        orderId: orderNumberMap.get(row.ORDER_ID) || String(row.ORDER_ID || ''),
+        sellerWeight: weightLbs, sellerLength: length, sellerWidth: width, sellerHeight: height,
+        carrier: (carrier.SERVICE_CARRIER || row.CARRIER_NAME || '').toUpperCase(),
+        serviceName: String(carrier.SERVICE_NAME || ''),
+        sellerBaseRate: rate.BASE_RATE || 0,
+        shipDate: String(row.SHIP_DATE || ''),
+        _multiShip: (orderShipCount.get(row.ORDER_ID) || 1) > 1
+      };
+    });
+
+    state.taskEngineRows = taskEngineRows;
+    updateTrackingToOrderMap(taskEngineRows);
+    state._metabaseTrackingNumbers = trackingNumbers;
+
+    // Show copy SQL button in manual options
+    document.getElementById('copy-datanet-sql-btn').style.display = '';
+
+    // === PHASE 2: Carrier Data (Turing — default, Datanet as fallback) ===
+    steps.push({ label: 'Fetching carrier data via Turing (' + trackingNumbers.length + ' trackings)...', status: 'active' });
+    updateFlowProgress(steps);
+    const t7 = Date.now();
+
+    let carrierDataSuccess = false;
+    let turingFailed = 0;
+    let turingSucceeded = 0;
+    const turingResults = [];
+
+    // Try Turing first (fast, per-tracking)
+    try {
+      const TURING_CONCURRENCY = 5;
+      const turingBatches = batchArray(trackingNumbers, TURING_CONCURRENCY);
+      for (let bi = 0; bi < turingBatches.length; bi++) {
+        const batch = turingBatches[bi];
+        const promises = batch.map(tn => turingFetch(tn).then(data => ({ tn, data, ok: true })).catch(() => ({ tn, ok: false })));
+        const results = await Promise.all(promises);
+        results.forEach(r => {
+          if (r.ok && r.data && r.data.shippingContainer) {
+            turingResults.push(mapTuringToDatanetRow(r.data));
+            turingSucceeded++;
+          } else {
+            turingFailed++;
+          }
+        });
+        steps[steps.length - 1].label = 'Fetching carrier data via Turing... ' + turingSucceeded + '/' + trackingNumbers.length;
+        updateFlowProgress(steps);
+      }
+
+      if (turingSucceeded > 0) {
+        state.datanetRows = turingResults;
+        carrierDataSuccess = true;
+      }
+    } catch (e) {
+      // Turing batch failed entirely — fall back to Datanet
+    }
+
+    // Fallback to Datanet if Turing got nothing
+    if (!carrierDataSuccess) {
+      steps[steps.length - 1].label = 'Turing unavailable — trying Datanet...';
+      updateFlowProgress(steps);
+
+      const savedUrl = (document.getElementById('datanet-profile-url').value || '').trim();
+      if (savedUrl) {
+        try {
+          const { profileId } = parseDatanetProfileUrl(savedUrl);
+          if (profileId) {
+            await datanetFetch('/whoAmI');
+            const profileData = await getDatanetProfile(profileId);
+            const profile = profileData.jobProfile;
+            const jobIds = profileData.jobIds || [];
+            if (jobIds.length > 0) {
+              const { jobId: urlJobId } = parseDatanetProfileUrl(savedUrl);
+              const jobId = urlJobId || String(jobIds[0]);
+              const newSQL = generateDatanetSQL(trackingNumbers);
+              await updateDatanetProfileSQL(profileId, profile, newSQL);
+              const runId = await runDatanetJob(jobId);
+              const jobRunUrl = 'https://datacentral.a2z.com/datanet/etl-manager/jobs/' + jobId + '/runs/' + runId;
+              steps[steps.length - 1].label = 'Running Datanet job... <a href="' + jobRunUrl + '" target="_blank" style="color:#0066ff;">View job</a>';
+              updateFlowProgress(steps);
+              await pollJobRun(runId, null, null);
+              const tsv = await downloadJobResults(runId);
+              const rows = parseTSVToRows(tsv);
+              if (rows.length > 0) {
+                const mapped = rows.map(mapDatanetRow);
+                const seen = new Set();
+                const deduped = mapped.filter(r => { if (seen.has(r.trackingNumber)) return false; seen.add(r.trackingNumber); return true; });
+                state.datanetRows = deduped;
+                carrierDataSuccess = true;
+              }
+            }
+          }
+        } catch (e) { /* Datanet also failed */ }
+      }
+    }
+
+    steps[steps.length - 1].status = carrierDataSuccess ? 'done' : 'error';
+    steps[steps.length - 1].time = Math.round((Date.now() - t7) / 1000);
+    if (carrierDataSuccess) {
+      const source = turingSucceeded > 0 ? 'Turing' : 'Datanet';
+      steps[steps.length - 1].label = 'Fetched ' + state.datanetRows.length + ' carrier rows (' + source + ')' + (turingFailed > 0 ? ' — ' + turingFailed + ' not found' : '');
+    } else {
+      steps[steps.length - 1].label = 'Carrier data unavailable — upload Datanet CSV manually';
+    }
+    updateFlowProgress(steps);
+
+    // === PHASE 3: Merge ===
+    if (carrierDataSuccess || state.datanetRows) {
+      steps.push({ label: 'Merging & analysing...', status: 'active' });
+      updateFlowProgress(steps);
+      performMerge();
+      steps[steps.length - 1].status = 'done';
+      steps[steps.length - 1].label = '✓ Merged ' + state.mergedRows.length + ' shipments';
+    } else {
+      steps.push({ label: 'Upload Datanet CSV to complete merge...', status: 'active' });
+    }
+
+    const totalTime = Math.round((Date.now() - startTime) / 1000);
+    updateFlowProgress(steps, 'Total: ' + totalTime + 's — ' + shipmentRows.length + ' shipments processed');
+
+    btn.textContent = 'Fetch & Analyse';
+
+  } catch (err) {
+    const lastStep = steps[steps.length - 1];
+    if (lastStep) lastStep.status = 'error';
+    updateFlowProgress(steps);
+    errorEl.textContent = err.message;
+    btn.textContent = 'Fetch & Analyse';
+  } finally {
+    btn.disabled = false;
+    if (btn.textContent === 'Working...') btn.textContent = 'Fetch & Analyse';
   }
 }
 
@@ -2864,7 +4169,19 @@ function init() {
   });
 
   // Auto-fetch seller details on load
-  fetchSellerDetails();
+  fetchSellerDetails().then(() => {
+    // Auto-fill company ID from seller details
+    const companyIdInput = document.getElementById('metabase-company-id');
+    if (state.seller.companyId && companyIdInput) {
+      companyIdInput.value = state.seller.companyId;
+    }
+  });
+
+  // Fetch Metabase database ID on load
+  fetchMetabaseDatabaseId();
+
+  // Fetch & Analyse button (runs full flow)
+  document.getElementById('fetch-all-btn').addEventListener('click', fetchAllFlow);
 
   // Fetch Datanet Data button
   document.getElementById('fetch-datanet-btn').addEventListener('click', fetchDatanetData);
